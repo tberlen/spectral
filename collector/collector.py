@@ -189,6 +189,7 @@ class SpectralCollector:
         self.start_time = time.time()
         self.last_sample_time = 0
         self.per_ap_counts = {}  # ip -> count
+        self.per_ap_last_seen = {}  # ip -> timestamp
 
     async def start(self):
         log.info('Connecting to database...')
@@ -246,11 +247,13 @@ class SpectralCollector:
         ap_details = {}
         for ip, count in self.per_ap_counts.items():
             ap_id = self.ap_cache.get(ip)
+            last_seen = self.per_ap_last_seen.get(ip)
             ap_details[ip] = {
                 'ap_id': ap_id,
                 'registered': ap_id is not None,
                 'samples': count,
-                'intensity': float(self.detector.get_intensity(ap_id)) if ap_id else 0
+                'intensity': float(self.detector.get_intensity(ap_id)) if ap_id else 0,
+                'last_seen_seconds_ago': int(now - last_seen) if last_seen else None,
             }
 
         body = {
@@ -437,8 +440,10 @@ class SpectralCollector:
 
         # Use AP's self-reported IP if available, fall back to UDP source
         ap_ip = sample.get('ip', addr[0])
-        self.last_sample_time = time.time()
+        now = time.time()
+        self.last_sample_time = now
         self.per_ap_counts[ap_ip] = self.per_ap_counts.get(ap_ip, 0) + 1
+        self.per_ap_last_seen[ap_ip] = now
 
         ap_id = self.ap_cache.get(ap_ip)
         if ap_id is None:

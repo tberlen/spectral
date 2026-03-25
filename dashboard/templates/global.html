@@ -18,7 +18,7 @@
 
     <div class="global-header">
         <h1>All Offices</h1>
-        <button class="btn" onclick="showAddOffice()">+ Add Office</button>
+        <button class="btn btn-secondary" onclick="showManage()">Manage</button>
     </div>
 
     <div class="office-grid" id="office-grid">
@@ -41,16 +41,32 @@
         {% endif %}
     </div>
 
-    <!-- Add Office Modal -->
-    <div class="modal" id="add-office-modal" style="display:none">
-        <div class="modal-content">
-            <h3>Add Office</h3>
+    <!-- Manage Offices Modal -->
+    <div class="modal" id="manage-modal" style="display:none">
+        <div class="modal-content" style="min-width:450px;">
+            <h3>Manage Offices</h3>
+            <div id="manage-list" style="margin-bottom:1rem;">
+                {% for o in offices %}
+                <div class="ap-row" style="margin-bottom:0.25rem;" id="manage-office-{{ o.id }}">
+                    <div class="ap-info" style="flex:1;">
+                        <strong>{{ o.name }}</strong>
+                        <span class="ap-ip">{{ o.location or '' }}</span>
+                    </div>
+                    <button class="btn btn-sm btn-secondary" onclick="deleteOffice({{ o.id }}, '{{ o.name }}')" style="color:var(--red);">Remove</button>
+                </div>
+                {% endfor %}
+                {% if not offices %}
+                <p style="color:var(--text-dim); font-size:0.85rem;">No offices yet.</p>
+                {% endif %}
+            </div>
+            <hr style="border-color:var(--border); margin-bottom:1rem;">
+            <h4 style="font-size:0.9rem; margin-bottom:0.5rem;">Add New Office</h4>
             <form id="add-office-form">
                 <label>Name <input type="text" name="name" required placeholder="e.g. Boston HQ"></label>
                 <label>Location <input type="text" name="location" placeholder="e.g. 123 Main St, Floor 3"></label>
                 <div class="modal-actions">
-                    <button type="button" class="btn btn-secondary" onclick="hideAddOffice()">Cancel</button>
-                    <button type="submit" class="btn">Add</button>
+                    <button type="button" class="btn btn-secondary" onclick="hideManage()">Close</button>
+                    <button type="submit" class="btn">Add Office</button>
                 </div>
             </form>
         </div>

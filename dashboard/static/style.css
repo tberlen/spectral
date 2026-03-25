@@ -328,6 +328,67 @@ body {
 .ap-status-dot.not_installed { background: var(--text-dim); }
 .ap-status-dot.stopped { background: var(--orange); }
 
+/* Connection banner */
+.connection-banner {
+    background: var(--red);
+    color: white;
+    text-align: center;
+    padding: 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    animation: banner-pulse 2s ease-in-out infinite;
+}
+
+@keyframes banner-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* Header heartbeat */
+.header-heartbeat {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-left: auto;
+    margin-right: 0.75rem;
+}
+
+.heartbeat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    display: inline-block;
+}
+
+.heartbeat-dot.live {
+    background: var(--green);
+    animation: hb-pulse 2s ease-in-out infinite;
+}
+
+.heartbeat-dot.stale { background: var(--orange); }
+.heartbeat-dot.dead { background: var(--red); }
+
+@keyframes hb-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+    50% { box-shadow: 0 0 6px 2px rgba(34, 197, 94, 0.4); }
+}
+
+/* Per-AP heartbeat dot */
+.ap-heartbeat {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 0.25rem;
+}
+
+.ap-heartbeat.live { background: var(--green); animation: hb-pulse 2s ease-in-out infinite; }
+.ap-heartbeat.stale { background: var(--orange); }
+.ap-heartbeat.dead { background: var(--red); }
+
 /* Modal */
 .modal {
     position: fixed;

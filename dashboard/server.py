@@ -256,18 +256,42 @@ class Dashboard:
         return web.json_response(result, dumps=_json_dumps)
 
     async def api_office_occupancy(self, request):
-        """Get per-AP occupancy for an office."""
+        """Get per-AP occupancy for an office with live collector data."""
         office_id = int(request.match_info['office_id'])
-        rows = await self.db.fetch('''
-            SELECT DISTINCT ON (ap.id)
-                ap.id, ap.name, ap.map_x, ap.map_y, ap.listener_status,
-                ao.intensity, ao.radio, ao.time as last_update
-            FROM access_points ap
-            LEFT JOIN ap_occupancy ao ON ap.id = ao.ap_id
-            WHERE ap.office_id = $1
-            ORDER BY ap.id, ao.time DESC
+        aps = await self.db.fetch('''
+            SELECT id, name, ip_address, map_x, map_y, listener_status
+            FROM access_points WHERE office_id = $1 ORDER BY name
         ''', office_id)
-        return web.json_response([dict(r) for r in rows], dumps=_json_dumps)
+
+        # Get live data from collector
+        collector_health, _ = await self._proxy_to_collector('GET', '/health')
+        per_ap = collector_health.get('per_ap', {}) if collector_health else {}
+        last_sample_ago = collector_health.get('last_sample_seconds_ago') if collector_health else None
+        collector_status = collector_health.get('status', 'unknown') if collector_health else 'unreachable'
+
+        result = []
+        for ap in aps:
+            ip = str(ap['ip_address'])
+            live = per_ap.get(ip, {})
+            result.append({
+                'id': ap['id'],
+                'name': ap['name'],
+                'map_x': ap['map_x'],
+                'map_y': ap['map_y'],
+                'listener_status': ap['listener_status'],
+                'intensity': live.get('intensity', 0),
+                'samples': live.get('samples', 0),
+                'receiving': live.get('registered', False) and live.get('samples', 0) > 0,
+                'last_seen_seconds_ago': live.get('last_seen_seconds_ago'),
+            })
+
+        return web.json_response({
+            'aps': result,
+            'collector': {
+                'status': collector_status,
+                'last_sample_seconds_ago': last_sample_ago,
+            }
+        }, dumps=_json_dumps)
 
     async def api_ap_occupancy(self, request):
         """Get occupancy history for a single AP."""

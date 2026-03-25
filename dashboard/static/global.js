@@ -59,10 +59,27 @@ function updateCards(offices) {
     });
 }
 
-// --- Add Office ---
+// --- Manage Offices ---
 
-function showAddOffice() { document.getElementById('add-office-modal').style.display = 'flex'; }
-function hideAddOffice() { document.getElementById('add-office-modal').style.display = 'none'; }
+function showManage() { document.getElementById('manage-modal').style.display = 'flex'; }
+function hideManage() { document.getElementById('manage-modal').style.display = 'none'; }
+
+async function deleteOffice(id, name) {
+    if (!confirm(`Remove "${name}"? This will delete all APs and data for this office.`)) return;
+
+    const resp = await fetch(`/api/offices/${id}`, { method: 'DELETE' });
+    if (resp.ok) {
+        const row = document.getElementById(`manage-office-${id}`);
+        if (row) {
+            row.style.opacity = '0.3';
+            row.querySelector('button').disabled = true;
+            row.querySelector('button').textContent = 'Removed';
+        }
+        // Remove the card from the grid
+        const card = document.querySelector(`.office-card[data-office-id="${id}"]`);
+        if (card) card.remove();
+    }
+}
 
 function setupAddOfficeForm() {
     const form = document.getElementById('add-office-form');

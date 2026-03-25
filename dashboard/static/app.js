@@ -147,11 +147,16 @@ async function poll() {
         const resp = await fetch(`/api/occupancy/office/${OFFICE_ID}`);
         const data = await resp.json();
 
-        drawHeatmap(data);
-        updateAPList(data);
-        updateOfficeStatus(data);
+        const apData = data.aps || [];
+        const collector = data.collector || {};
+
+        drawHeatmap(apData);
+        updateAPList(apData);
+        updateOfficeStatus(apData);
+        updateHeartbeat(collector, apData);
     } catch (e) {
         console.error('Poll error:', e);
+        updateHeartbeat({ status: 'unreachable' }, []);
     }
 }
 
@@ -161,23 +166,66 @@ function updateAPList(apData) {
         if (el) {
             const intensity = ap.intensity || 0;
             const pct = Math.round(intensity * 100);
-            el.textContent = `${pct}%`;
-            el.style.color = intensity > 0.5 ? '#ef4444' :
-                             intensity > 0.2 ? '#eab308' : '#22c55e';
+            const lastAgo = ap.last_seen_seconds_ago;
+
+            // Per-AP heartbeat
+            let dotClass = 'dead';
+            let agoText = 'No data';
+            if (lastAgo !== null && lastAgo < 10) {
+                dotClass = 'live';
+                agoText = `${lastAgo}s ago`;
+            } else if (lastAgo !== null && lastAgo < 60) {
+                dotClass = 'stale';
+                agoText = `${lastAgo}s ago`;
+            } else if (lastAgo !== null) {
+                dotClass = 'dead';
+                const m = Math.floor(lastAgo / 60);
+                agoText = `${m}m ago`;
+            }
+
+            const color = intensity > 0.5 ? '#ef4444' : intensity > 0.2 ? '#eab308' : '#22c55e';
+            el.innerHTML = `<span class="ap-heartbeat ${dotClass}"></span>` +
+                `<span style="color:${color}">${pct}%</span> ` +
+                `<span style="font-size:0.7rem; color:var(--text-dim);">${agoText}</span>`;
         }
 
         // Update marker class
         const marker = document.querySelector(`.ap-marker[data-ap-id="${ap.id}"]`);
         if (marker) {
-            marker.className = `ap-marker ${ap.listener_status === 'deployed' ? 'active' : (ap.listener_status || 'unknown')}`;
+            marker.className = `ap-marker ${ap.receiving ? 'active' : (ap.listener_status || 'unknown')}`;
         }
     });
+}
+
+function updateHeartbeat(collector, apData) {
+    const banner = document.getElementById('connection-banner');
+    const bannerText = document.getElementById('banner-text');
+
+    const lastAgo = collector.last_sample_seconds_ago;
+    const status = collector.status;
+
+    // Connection banner - only shows when something is wrong
+    if (status === 'unreachable') {
+        banner.style.display = 'block';
+        bannerText.textContent = 'Collector service unreachable';
+    } else if (lastAgo !== null && lastAgo > 30) {
+        banner.style.display = 'block';
+        const mins = Math.floor(lastAgo / 60);
+        const secs = lastAgo % 60;
+        bannerText.textContent = mins > 0
+            ? `Data feed lost - last received ${mins}m ${secs}s ago`
+            : `Data feed lost - last received ${secs}s ago`;
+    } else if (status === 'no_data') {
+        banner.style.display = 'block';
+        bannerText.textContent = 'No data from any AP';
+    } else {
+        banner.style.display = 'none';
+    }
 }
 
 function updateOfficeStatus(apData) {
     const el = document.getElementById('office-status');
     const anyOccupied = apData.some(ap => (ap.intensity || 0) > 0.15);
-    const allReporting = apData.every(ap => ap.listener_status === 'deployed');
 
     if (apData.length === 0) {
         el.textContent = 'No APs';
@@ -426,7 +474,13 @@ function showDiscover() {
         btn.disabled = false;
     }
 }
-function hideDiscover() { document.getElementById('discover-modal').style.display = 'none'; }
+function hideDiscover() {
+    document.getElementById('discover-modal').style.display = 'none';
+    // Reload to pick up any newly added APs
+    if (document.querySelector('#discover-results .btn[disabled]')) {
+        location.reload();
+    }
+}
 
 async function runDiscover() {
     const subnet = document.getElementById('discover-subnet').value;
@@ -457,7 +511,14 @@ async function runDiscover() {
             status.textContent = `Error: ${data.error}`;
         } else {
             const found = data.found || [];
-            status.textContent = `Scanned ${data.scanned} hosts, found ${found.length} APs`;
+            const newCount = found.filter(a => !a.already_registered).length;
+            status.textContent = `Scanned ${data.scanned} hosts, found ${found.length} APs (${newCount} new)`;
+
+            const addAllBtn = document.getElementById('discover-add-all-btn');
+            if (newCount > 0) {
+                addAllBtn.style.display = '';
+                addAllBtn.textContent = `Add All (${newCount})`;
+            }
 
             results.innerHTML = found.map(ap => `
                 <div class="ap-row" style="margin-bottom:0.25rem;">
@@ -469,7 +530,7 @@ async function runDiscover() {
                         ${ap.already_registered ? '<span style="color:var(--text-dim); font-size:0.75rem;">already added</span>' : ''}
                     </div>
                     ${ap.already_registered ? '' : `
-                        <button class="btn btn-sm" onclick="addDiscoveredAP('${ap.ip}', '${ap.hostname}')">Add</button>
+                        <button class="btn btn-sm" onclick="addDiscoveredAP('${ap.ip}', '${ap.hostname}', this)">Add</button>
                     `}
                 </div>
             `).join('');
@@ -482,7 +543,24 @@ async function runDiscover() {
     btn.textContent = 'Scan';
 }
 
-async function addDiscoveredAP(ip, hostname) {
+async function addAllDiscovered() {
+    const btns = document.querySelectorAll('#discover-results .btn.btn-sm:not([disabled])');
+    const addAllBtn = document.getElementById('discover-add-all-btn');
+    addAllBtn.disabled = true;
+    addAllBtn.textContent = 'Adding...';
+
+    for (const btn of btns) {
+        btn.click();
+        await new Promise(r => setTimeout(r, 200));
+    }
+
+    addAllBtn.textContent = 'All Added';
+}
+
+async function addDiscoveredAP(ip, hostname, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Adding...';
+
     const resp = await fetch('/api/aps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -497,7 +575,12 @@ async function addDiscoveredAP(ip, hostname) {
     });
 
     if (resp.ok) {
-        location.reload();
+        btn.textContent = 'Added';
+        btn.style.color = 'var(--green)';
+    } else {
+        btn.textContent = 'Failed';
+        btn.style.color = 'var(--red)';
+        btn.disabled = false;
     }
 }
 
