@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ office.name }} - C-You</title>
+    <title>{{ office.name }} - Spectral</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <nav class="nav">
-        <a href="/" class="nav-brand">C-You</a>
+        <a href="/" class="nav-brand">Spectral</a>
         <div class="nav-offices">
             {% for o in offices %}
             <a href="/office/{{ o.id }}" class="nav-link {% if o.id == office.id %}active{% endif %}">
@@ -21,10 +21,17 @@
     <div class="office-header">
         <h1>{{ office.name }}</h1>
         <span class="office-location">{{ office.location or '' }}</span>
+        <button class="btn btn-sm btn-secondary" onclick="showOfficeSettings()" style="margin-left:0.5rem;">Settings</button>
         <div class="office-status" id="office-status">--</div>
     </div>
 
     <div class="map-container">
+        <div class="map-toolbar" id="map-toolbar">
+            <button class="btn btn-sm" onclick="uploadFloorPlan()">Upload Floor Plan</button>
+            {% if office.floor_plan_url %}
+            <button class="btn btn-sm btn-secondary" onclick="toggleEditMode()">Re-crop</button>
+            {% endif %}
+        </div>
         <div class="map-wrapper" id="map-wrapper">
             <!-- Floor plan image (if set) -->
             {% if office.floor_plan_url %}
@@ -46,17 +53,46 @@
 
     <div class="ap-list">
         <div class="ap-list-header">
-            <h2>Access Points</h2>
-            <button class="btn" onclick="showAddAP()">+ Add AP</button>
+            <h2 onclick="toggleAPList()" style="cursor:pointer;">Access Points <span id="ap-toggle" style="font-size:0.8rem; color:var(--text-dim);">&#9660;</span></h2>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                <label style="font-size:0.8rem; color:var(--text-dim); display:flex; align-items:center; gap:0.4rem;">
+                    Sensitivity
+                    <input type="range" id="sensitivity-slider" min="1" max="50" value="10"
+                           style="width:80px; accent-color:var(--accent);"
+                           oninput="setSensitivity(this.value / 10)">
+                    <span id="sensitivity-val">1.0x</span>
+                </label>
+                <button class="btn btn-sm btn-secondary" onclick="showBaselineModal()">Baseline All</button>
+                <button class="btn btn-sm btn-secondary" onclick="showDiscover()">Discover APs</button>
+                <button class="btn" onclick="showAddAP()">+ Add AP</button>
+            </div>
         </div>
         <div id="ap-table-body">
             {% for ap in aps %}
             <div class="ap-row" data-ap-id="{{ ap.id }}">
-                <div class="ap-status-dot {{ ap.listener_status or 'unknown' }}"></div>
+                <div class="ap-status-dot {{ ap.listener_status or 'unknown' }}" id="ap-dot-{{ ap.id }}"></div>
                 <div class="ap-info">
                     <strong>{{ ap.name }}</strong>
                     <span class="ap-ip">{{ ap.ip_address }}</span>
                     <span class="ap-model">{{ ap.model }}</span>
+                </div>
+                <div class="ap-listener-status" id="ap-lstatus-{{ ap.id }}">
+                    {% if ap.listener_status == 'deployed' %}
+                        <span class="lstatus-ok">Listener Running</span>
+                    {% elif ap.listener_status == 'not_installed' %}
+                        <span class="lstatus-none">Not Installed</span>
+                    {% elif ap.listener_status == 'stopped' %}
+                        <span class="lstatus-warn">Stopped</span>
+                    {% else %}
+                        <span class="lstatus-unknown">Unknown</span>
+                    {% endif %}
+                </div>
+                <div class="ap-actions">
+                    <button class="btn btn-sm" onclick="checkAP({{ ap.id }})" id="ap-check-{{ ap.id }}">Check</button>
+                    <button class="btn btn-sm" onclick="deployAP({{ ap.id }})" id="ap-deploy-{{ ap.id }}">Install</button>
+                    <button class="btn btn-sm btn-secondary" onclick="baselineAP({{ ap.id }})" id="ap-baseline-{{ ap.id }}">Baseline</button>
+                    <button class="btn btn-sm btn-secondary" onclick="editAP({{ ap.id }}, '{{ ap.name }}', '{{ ap.ip_address }}')">Edit</button>
+                    <button class="btn btn-sm btn-secondary" onclick="deleteAP({{ ap.id }}, '{{ ap.name }}')" style="color:var(--red);">X</button>
                 </div>
                 <div class="ap-intensity" id="ap-intensity-{{ ap.id }}">--</div>
             </div>
@@ -71,8 +107,8 @@
             <form id="add-ap-form">
                 <label>Name <input type="text" name="name" required></label>
                 <label>IP Address <input type="text" name="ip_address" required></label>
-                <label>SSH User <input type="text" name="ssh_user" required></label>
-                <label>SSH Password <input type="password" name="ssh_password" required></label>
+                <label>SSH User <input type="text" name="ssh_user" id="ap-ssh-user" required></label>
+                <label>SSH Password <input type="password" name="ssh_password" id="ap-ssh-pass" required></label>
                 <label>Model <input type="text" name="model" value="U7 Pro Max"></label>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" onclick="hideAddAP()">Cancel</button>
@@ -82,10 +118,121 @@
         </div>
     </div>
 
+    <!-- Discover APs Modal -->
+    <div class="modal" id="discover-modal" style="display:none">
+        <div class="modal-content" style="max-width:600px;">
+            <h3>Discover Access Points</h3>
+            <p style="font-size:0.85rem; color:var(--text-dim); margin-bottom:0.75rem;">
+                Scan a subnet for UniFi APs. Uses the office default SSH credentials.
+            </p>
+            <p id="discover-creds-warning" style="font-size:0.8rem; color:var(--orange); margin-bottom:0.5rem; display:none;">
+                No default SSH credentials set. Go to Settings first.
+            </p>
+            <label>Subnet (CIDR)
+                <input type="text" id="discover-subnet" placeholder="e.g. 10.68.30.0/24" required>
+            </label>
+            <div id="discover-status" style="font-size:0.85rem; color:var(--text-dim); margin:0.5rem 0;"></div>
+            <div id="discover-results" style="max-height:300px; overflow-y:auto;"></div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="hideDiscover()">Close</button>
+                <button class="btn" id="discover-scan-btn" onclick="runDiscover()">Scan</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit AP Modal -->
+    <div class="modal" id="edit-ap-modal" style="display:none">
+        <div class="modal-content">
+            <h3>Edit Access Point</h3>
+            <form id="edit-ap-form">
+                <input type="hidden" name="ap_id" id="edit-ap-id">
+                <label>Name <input type="text" name="name" id="edit-ap-name" required></label>
+                <label>IP Address <input type="text" name="ip_address" id="edit-ap-ip" required></label>
+                <label>SSH User <input type="text" name="ssh_user" id="edit-ap-user"></label>
+                <label>SSH Password <input type="password" name="ssh_password" id="edit-ap-pass"></label>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="hideEditAP()">Cancel</button>
+                    <button type="submit" class="btn">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Baseline Modal -->
+    <div class="modal" id="baseline-modal" style="display:none">
+        <div class="modal-content">
+            <h3>Capture Baseline</h3>
+            <p style="font-size:0.85rem; color:var(--text-dim); margin-bottom:0.75rem;">
+                Captures the "empty office" spectral signature for all APs. Run when no one is on the floor.
+            </p>
+            <label>When?
+                <select id="baseline-when" style="display:block; width:100%; margin-top:0.25rem; padding:0.5rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text);">
+                    <option value="now">Now</option>
+                    <option value="5">In 5 minutes</option>
+                    <option value="15">In 15 minutes</option>
+                    <option value="30">In 30 minutes</option>
+                    <option value="60">In 1 hour</option>
+                </select>
+            </label>
+            <label>Duration
+                <select id="baseline-duration" style="display:block; width:100%; margin-top:0.25rem; padding:0.5rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text);">
+                    <option value="60">1 minute</option>
+                    <option value="120">2 minutes</option>
+                    <option value="300" selected>5 minutes</option>
+                    <option value="600">10 minutes</option>
+                    <option value="900">15 minutes</option>
+                </select>
+            </label>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="hideBaselineModal()">Cancel</button>
+                <button class="btn" onclick="startBaseline()">Start</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Office Settings Modal -->
+    <div class="modal" id="office-settings-modal" style="display:none">
+        <div class="modal-content">
+            <h3>Office Settings</h3>
+            <form id="office-settings-form">
+                <label>Office Name <input type="text" name="name" value="{{ office.name }}"></label>
+                <label>Location <input type="text" name="location" value="{{ office.location or '' }}"></label>
+                <hr style="border-color:var(--border); margin:0.75rem 0;">
+                <h4 style="font-size:0.9rem; margin-bottom:0.5rem;">Default AP Credentials</h4>
+                <label>Default SSH User <input type="text" name="default_ssh_user" value="{{ office.default_ssh_user or '' }}"></label>
+                <label>Default SSH Password <input type="password" name="default_ssh_password" value="{{ office.default_ssh_password or '' }}"></label>
+                <hr style="border-color:var(--border); margin:0.75rem 0;">
+                <h4 style="font-size:0.9rem; margin-bottom:0.5rem;">Scheduled Baseline</h4>
+                <label>Time (24h) <input type="time" id="sched-time" name="sched_time" value="02:00"></label>
+                <label>Duration
+                    <select id="sched-duration" name="sched_duration" style="display:block; width:100%; margin-top:0.25rem; padding:0.5rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text);">
+                        <option value="60">1 minute</option>
+                        <option value="120">2 minutes</option>
+                        <option value="300" selected>5 minutes</option>
+                        <option value="600">10 minutes</option>
+                        <option value="900">15 minutes</option>
+                    </select>
+                </label>
+                <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.25rem;">
+                    <input type="checkbox" id="sched-enabled" name="sched_enabled" style="width:auto;">
+                    Enabled
+                </label>
+                <div id="sched-last-run" style="font-size:0.75rem; color:var(--text-dim); margin-top:0.25rem;"></div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="hideOfficeSettings()">Cancel</button>
+                    <button type="submit" class="btn">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         const OFFICE_ID = {{ office.id }};
         const APS = {{ aps | tojson }};
+        const SERVER_IP = '{{ server_ip }}';
+        const DEFAULT_SSH_USER = '{{ office.default_ssh_user or "" }}';
+        const DEFAULT_SSH_PASSWORD = '{{ office.default_ssh_password or "" }}';
     </script>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=16"></script>
 </body>
 </html>

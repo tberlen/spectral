@@ -1,4 +1,4 @@
-# C-You - WiFi Spectral Occupancy Monitoring Service
+# Spectral - WiFi Spectral Occupancy Monitoring Service
 
 ## Project Overview
 
@@ -82,6 +82,15 @@ ssh root@REDACTED_BUILD_SERVER 'base64 /tmp/spectral_listener' > /tmp/sl.b64
 sshpass -p '<password>' ssh <user>@<ap-ip> \
   'cat > /tmp/sl.b64 && base64 -d /tmp/sl.b64 > /tmp/spectral_listener && chmod +x /tmp/spectral_listener && rm /tmp/sl.b64' < /tmp/sl.b64
 ```
+
+## Source Control
+
+- **Home GitLab:** http://REDACTED_INTERNAL_IP
+  - Username: root
+  - API Token: REDACTED_GITLAB_TOKEN
+  - Repo: http://REDACTED_INTERNAL_IP/root/c-you
+  - Branch: main
+- **Work GitLab:** gitlab.iqt.org (push here when ready for production)
 
 ## Infrastructure
 

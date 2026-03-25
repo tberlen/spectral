@@ -1,55 +1,60 @@
-version: '3.8'
-
 services:
-  db:
+  spectral-db:
     image: timescale/timescaledb:latest-pg16
+    container_name: spectral-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: cyou
-      POSTGRES_USER: cyou
+      POSTGRES_DB: spectral
+      POSTGRES_USER: spectral
       POSTGRES_PASSWORD: REDACTED_DB_PASS
     ports:
       - "5433:5432"
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - spectral_db_data:/var/lib/postgresql/data
       - ../collector/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
 
-  collector:
+  spectral-collector:
     build: ../collector
+    container_name: spectral-collector
     restart: unless-stopped
     depends_on:
-      - db
+      - spectral-db
     environment:
-      DATABASE_URL: postgresql://cyou:REDACTED_DB_PASS@db:5432/cyou
+      DATABASE_URL: postgresql://spectral:REDACTED_DB_PASS@spectral-db:5432/spectral
       UDP_PORT: "8766"
     ports:
       - "8766:8766/udp"
+      - "8767:8767"
 
-  ap-manager:
+  spectral-manager:
     build: ../ap-manager
+    container_name: spectral-manager
     restart: unless-stopped
     depends_on:
-      - db
+      - spectral-db
     environment:
-      DATABASE_URL: postgresql://cyou:REDACTED_DB_PASS@db:5432/cyou
-      BUILD_HOST: "REDACTED_BUILD_SERVER"
-      BUILD_USER: "root"
+      DATABASE_URL: postgresql://spectral:REDACTED_DB_PASS@spectral-db:5432/spectral
+      SERVER_IP: "REDACTED_SERVER_IP"
+      COLLECTOR_PORT: "8766"
       HEALTH_CHECK_INTERVAL: "60"
     volumes:
       - ../spectral:/opt/spectral:ro
-      - listener_binary:/opt/listener
 
-  dashboard:
+  spectral-dashboard:
     build: ../dashboard
+    container_name: spectral-dashboard
     restart: unless-stopped
     depends_on:
-      - db
-      - collector
+      - spectral-db
+      - spectral-collector
+      - spectral-manager
     environment:
-      DATABASE_URL: postgresql://cyou:REDACTED_DB_PASS@db:5432/cyou
+      DATABASE_URL: postgresql://spectral:REDACTED_DB_PASS@spectral-db:5432/spectral
+      SERVER_IP: "REDACTED_SERVER_IP"
+      AP_MANAGER_URL: "http://spectral-manager:8081"
+      COLLECTOR_URL: "http://spectral-collector:8767"
     ports:
       - "8080:8080"
 
 volumes:
-  db_data:
-  listener_binary:
+  spectral_db_data:

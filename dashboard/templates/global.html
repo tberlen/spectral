@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>C-You - All Offices</title>
+    <title>Spectral - All Offices</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <nav class="nav">
-        <a href="/" class="nav-brand">C-You</a>
+        <a href="/" class="nav-brand">Spectral</a>
         <div class="nav-offices">
             {% for o in offices %}
             <a href="/office/{{ o.id }}" class="nav-link">{{ o.name }}</a>
@@ -24,9 +24,7 @@
     <div class="office-grid" id="office-grid">
         {% for o in offices %}
         <a href="/office/{{ o.id }}" class="office-card" data-office-id="{{ o.id }}">
-            <div class="office-card-status" id="status-{{ o.id }}">
-                <div class="status-indicator unknown"></div>
-            </div>
+            <div class="office-card-badge" id="badge-{{ o.id }}">--</div>
             <h2>{{ o.name }}</h2>
             <p class="office-card-location">{{ o.location or '' }}</p>
             <div class="office-card-details" id="details-{{ o.id }}">

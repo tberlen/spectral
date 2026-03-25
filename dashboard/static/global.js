@@ -1,4 +1,4 @@
-/* C-You Global Office View */
+/* Spectral Global Office View */
 
 const POLL_INTERVAL = 10000;
 
@@ -20,21 +20,22 @@ async function poll() {
 
 function updateCards(offices) {
     offices.forEach(office => {
-        const statusEl = document.getElementById(`status-${office.id}`);
+        const badgeEl = document.getElementById(`badge-${office.id}`);
         const detailsEl = document.getElementById(`details-${office.id}`);
 
-        if (statusEl) {
-            const indicator = statusEl.querySelector('.status-indicator');
-            const occupied = office.occupied;
-            const intensity = office.avg_intensity || 0;
+        if (badgeEl) {
+            const apCount = office.ap_count || 0;
+            const activeCount = office.active_ap_count || 0;
 
-            if (office.ap_count === 0 || office.last_update === null) {
-                indicator.className = 'status-indicator unknown';
-            } else if (occupied) {
-                indicator.className = intensity > 0.5 ?
-                    'status-indicator occupied' : 'status-indicator partial';
+            if (apCount === 0 || activeCount === 0) {
+                badgeEl.textContent = 'No Data';
+                badgeEl.className = 'office-card-badge unknown';
+            } else if (office.occupied) {
+                badgeEl.textContent = 'Occupied';
+                badgeEl.className = 'office-card-badge occupied';
             } else {
-                indicator.className = 'status-indicator empty';
+                badgeEl.textContent = 'Vacant';
+                badgeEl.className = 'office-card-badge vacant';
             }
         }
 
@@ -46,10 +47,11 @@ function updateCards(offices) {
             let statusText = '';
             if (apCount === 0) {
                 statusText = 'No APs configured';
-            } else if (office.occupied) {
-                statusText = `Occupied (${Math.round(intensity * 100)}%) - ${activeCount}/${apCount} APs`;
             } else {
-                statusText = `Empty - ${activeCount}/${apCount} APs`;
+                statusText = `${activeCount}/${apCount} APs reporting`;
+                if (activeCount > 0) {
+                    statusText += ` - ${Math.round(intensity * 100)}% activity`;
+                }
             }
 
             detailsEl.querySelector('.ap-count').textContent = statusText;

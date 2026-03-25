@@ -80,6 +80,34 @@ static char g_server_ip[64] = "";
 static int g_server_port = 0;
 static char g_iface[32] = "";
 static int g_http_port = HTTP_PORT_DEFAULT;
+static char g_hostname[64] = "";
+static char g_my_ip[64] = "";
+
+static void discover_identity(void)
+{
+    /* Hostname */
+    gethostname(g_hostname, sizeof(g_hostname) - 1);
+
+    /* Get own IP by connecting a UDP socket to the server */
+    if (g_server_ip[0]) {
+        int s = socket(AF_INET, SOCK_DGRAM, 0);
+        if (s >= 0) {
+            struct sockaddr_in dst;
+            memset(&dst, 0, sizeof(dst));
+            dst.sin_family = AF_INET;
+            dst.sin_port = htons(1);
+            inet_pton(AF_INET, g_server_ip, &dst.sin_addr);
+            if (connect(s, (struct sockaddr *)&dst, sizeof(dst)) == 0) {
+                struct sockaddr_in local;
+                socklen_t len = sizeof(local);
+                if (getsockname(s, (struct sockaddr *)&local, &len) == 0) {
+                    inet_ntop(AF_INET, &local.sin_addr, g_my_ip, sizeof(g_my_ip));
+                }
+            }
+            close(s);
+        }
+    }
+}
 
 static void signal_handler(int sig)
 {
@@ -358,6 +386,8 @@ static void *http_thread(void *arg)
             time_t uptime = time(NULL) - g_start_time;
             snprintf(body, sizeof(body),
                 "{\"status\":\"ok\","
+                "\"hostname\":\"%s\","
+                "\"ap_ip\":\"%s\","
                 "\"server_ip\":\"%s\","
                 "\"server_port\":%d,"
                 "\"interface\":\"%s\","
@@ -365,6 +395,7 @@ static void *http_thread(void *arg)
                 "\"samples_sent\":%lu,"
                 "\"errors\":%lu,"
                 "\"uptime_seconds\":%ld}",
+                g_hostname, g_my_ip,
                 g_server_ip, g_server_port, g_iface,
                 g_http_port,
                 g_samples_sent, g_errors,
@@ -600,6 +631,10 @@ static int cmd_stream(const char *iface, int protocol,
     g_server_port = port;
     strncpy(g_iface, iface, sizeof(g_iface) - 1);
 
+    /* Discover own IP and hostname */
+    discover_identity();
+    fprintf(stderr, "Identity: hostname=%s ip=%s\n", g_hostname, g_my_ip);
+
     /* Start HTTP health server */
     start_http_server();
 
@@ -669,11 +704,12 @@ static int cmd_stream(const char *iface, int protocol,
 
         g_samples_sent++;
 
-        /* Build compact JSON */
+        /* Build compact JSON with AP identity */
         uint32_t freq       = rd32(payload + OFF_FREQ);
         int8_t   noise      = (int8_t)payload[OFF_NOISE_FLOOR];
         int8_t   rssi_val   = (int8_t)payload[OFF_RSSI];
         uint64_t tsf        = rd64(payload + OFF_TSF);
+        const uint8_t *mac  = payload + OFF_MACADDR;
 
         int bin_len = payload_len - OFF_BIN_START;
         if (bin_len > MAX_FFT_BINS) bin_len = MAX_FFT_BINS;
@@ -689,8 +725,12 @@ static int cmd_stream(const char *iface, int protocol,
         }
 
         int pos = snprintf(json, sizeof(json),
-            "{\"f\":%u,\"n\":%d,\"r\":%d,\"t\":%llu,"
+            "{\"h\":\"%s\",\"ip\":\"%s\","
+            "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
+            "\"f\":%u,\"n\":%d,\"r\":%d,\"t\":%llu,"
             "\"nz\":%d,\"mv\":%d,\"mi\":%d,\"b\":[",
+            g_hostname, g_my_ip,
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
             freq, noise, rssi_val, (unsigned long long)tsf,
             nz, max_bv, max_bi);
 

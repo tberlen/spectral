@@ -1,250 +1,337 @@
 """
-C-You AP Manager
+Spectral AP Manager
 
-Monitors AP health, deploys/redeploys spectral listeners automatically.
-Handles AP reboots, stale server IPs, and listener failures.
+Monitors AP health, deploys/redeploys spectral listeners.
+Exposes an HTTP API for the dashboard to trigger on-demand actions.
+Cross-compiles the listener binary locally (no external build host).
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import socket
-import subprocess
-import tempfile
 
 import aiohttp
 import asyncpg
-import asyncssh
+from aiohttp import web
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('ap-manager')
 
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://cyou:REDACTED_DB_PASS@localhost:5433/cyou')
-BUILD_HOST = os.environ.get('BUILD_HOST', 'REDACTED_BUILD_SERVER')
-BUILD_USER = os.environ.get('BUILD_USER', 'root')
 HEALTH_CHECK_INTERVAL = int(os.environ.get('HEALTH_CHECK_INTERVAL', '60'))
 LISTENER_SOURCE = os.environ.get('LISTENER_SOURCE', '/opt/spectral/spectral_listener.c')
-LISTENER_BINARY = os.environ.get('LISTENER_BINARY', '/opt/listener/spectral_listener')
+LISTENER_BINARY = '/tmp/spectral_listener'
 LISTENER_PORT = int(os.environ.get('LISTENER_PORT', '8080'))
 COLLECTOR_PORT = int(os.environ.get('COLLECTOR_PORT', '8766'))
-
-
-def get_my_ip():
-    """Get this server's IP address."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('10.255.255.255', 1))
-        return s.getsockname()[0]
-    except Exception:
-        return '127.0.0.1'
-    finally:
-        s.close()
+SERVER_IP = os.environ.get('SERVER_IP', 'REDACTED_SERVER_IP')
+API_PORT = int(os.environ.get('API_PORT', '8081'))
 
 
 class APManager:
     def __init__(self):
         self.db = None
-        self.server_ip = get_my_ip()
         self.binary_ready = False
+        self.b64_binary = None  # Cached base64-encoded binary
+        self.app = web.Application()
+        self._setup_routes()
+
+    def _setup_routes(self):
+        self.app.router.add_post('/api/aps/{id}/check', self.api_check)
+        self.app.router.add_post('/api/aps/{id}/deploy', self.api_deploy)
+        self.app.router.add_post('/api/discover', self.api_discover)
+        self.app.router.add_get('/health', self.api_health)
 
     async def start(self):
-        log.info(f'AP Manager starting (server IP: {self.server_ip})')
+        log.info(f'AP Manager starting (server IP: {SERVER_IP})')
         self.db = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=3)
         log.info('Database connected')
 
-        # Ensure we have a compiled binary
-        await self._ensure_binary()
+        await self._compile_binary()
 
-        # Main health check loop
+        # Start HTTP API
+        runner = web.AppRunner(self.app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', API_PORT)
+        await site.start()
+        log.info(f'API listening on port {API_PORT}')
+
+        # Background health check loop
+        asyncio.create_task(self._health_loop())
+
         while True:
-            try:
-                await self._check_all_aps()
-            except Exception as e:
-                log.error(f'Health check cycle error: {e}')
-            await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+            await asyncio.sleep(3600)
 
-    async def _ensure_binary(self):
-        """Ensure the spectral listener binary is compiled and ready."""
-        if os.path.exists(LISTENER_BINARY):
-            log.info(f'Listener binary found at {LISTENER_BINARY}')
-            self.binary_ready = True
-            return
-
-        log.info('Compiling spectral listener binary...')
-        try:
-            await self._compile_binary()
-            self.binary_ready = True
-            log.info('Binary compiled successfully')
-        except Exception as e:
-            log.error(f'Failed to compile binary: {e}')
-            self.binary_ready = False
+    # --- Local cross-compilation ---
 
     async def _compile_binary(self):
-        """Cross-compile on the build host."""
-        proc = await asyncio.create_subprocess_exec(
-            'scp', LISTENER_SOURCE, f'{BUILD_USER}@{BUILD_HOST}:/tmp/spectral_listener.c',
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        await proc.wait()
+        """Cross-compile the spectral listener inside this container."""
+        if not os.path.exists(LISTENER_SOURCE):
+            log.error(f'Source not found: {LISTENER_SOURCE}')
+            return
 
+        log.info('Compiling spectral listener...')
         proc = await asyncio.create_subprocess_exec(
-            'ssh', f'{BUILD_USER}@{BUILD_HOST}',
-            'arm-linux-gnueabi-gcc -O2 -Wall -static -o /tmp/spectral_listener /tmp/spectral_listener.c',
+            'arm-linux-gnueabi-gcc', '-O2', '-Wall', '-static',
+            '-o', LISTENER_BINARY, LISTENER_SOURCE, '-lpthread',
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise RuntimeError(f'Compile failed: {stderr.decode()}')
+            log.error(f'Compile failed: {stderr.decode()}')
+            return
 
-        # Fetch binary
-        os.makedirs(os.path.dirname(LISTENER_BINARY), exist_ok=True)
+        # Cache base64 encoding
+        with open(LISTENER_BINARY, 'rb') as f:
+            self.b64_binary = base64.b64encode(f.read()).decode()
+
+        self.binary_ready = True
+        log.info(f'Binary compiled ({len(self.b64_binary)} bytes b64)')
+
+    # --- SSH helpers using sshpass ---
+
+    async def _ssh_run(self, ip, user, password, command, stdin_data=None, timeout=30):
+        """Run a command on an AP via sshpass + ssh."""
+        args = [
+            'sshpass', '-p', password,
+            'ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=10',
+            f'{user}@{ip}', command
+        ]
         proc = await asyncio.create_subprocess_exec(
-            'scp', f'{BUILD_USER}@{BUILD_HOST}:/tmp/spectral_listener', LISTENER_BINARY,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE if stdin_data else None
         )
-        await proc.wait()
-
-    async def _check_all_aps(self):
-        """Check health of all registered APs."""
-        aps = await self.db.fetch(
-            'SELECT id, name, ip_address, ssh_user, ssh_password, listener_status '
-            'FROM access_points'
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=stdin_data.encode() if stdin_data else None),
+            timeout=timeout
         )
+        return proc.returncode, stdout.decode(), stderr.decode()
 
-        if not aps:
-            log.debug('No APs registered')
-            return
+    # --- Check AP status ---
 
-        tasks = [self._check_ap(ap) for ap in aps]
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _check_ap(self, ap):
-        """Check a single AP's health and remediate if needed."""
-        ap_id = ap['id']
-        ip = str(ap['ip_address'])
-        name = ap['name']
-
-        # Step 1: Try HTTP health check
-        status = await self._http_health_check(ip)
-
-        if status == 'healthy':
-            # Check if server IP is current
-            server_ip = await self._get_ap_server_ip(ip)
-            if server_ip and server_ip != self.server_ip:
-                log.info(f'AP {name} ({ip}): stale server IP {server_ip}, redeploying')
-                await self._deploy_listener(ap)
-                await self._log_health(ap_id, 'redeployed', f'Stale server IP: {server_ip}')
-                return
-
-            await self._update_ap_status(ap_id, 'deployed')
-            return
-
-        # Step 2: HTTP failed - try SSH to check/fix
-        log.info(f'AP {name} ({ip}): health check failed ({status}), attempting SSH remediation')
-
-        ssh_ok = await self._ssh_check_and_fix(ap)
-        if ssh_ok:
-            await self._log_health(ap_id, 'redeployed', 'Listener was not running')
-        else:
-            await self._update_ap_status(ap_id, 'unreachable')
-            await self._log_health(ap_id, 'unreachable', f'HTTP and SSH both failed')
-            log.warning(f'AP {name} ({ip}): unreachable')
-
-    async def _http_health_check(self, ip):
-        """Check AP listener HTTP health endpoint."""
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-                async with session.get(f'http://{ip}:{LISTENER_PORT}/health') as resp:
-                    if resp.status == 200:
-                        return 'healthy'
-                    return f'http_{resp.status}'
-        except Exception:
-            return 'unreachable'
-
-    async def _get_ap_server_ip(self, ip):
-        """Get the configured server IP from the AP listener."""
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-                async with session.get(f'http://{ip}:{LISTENER_PORT}/status') as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data.get('server_ip')
-        except Exception:
-            return None
-
-    async def _ssh_check_and_fix(self, ap):
-        """SSH into AP, check listener status, deploy if needed."""
+    async def _check_ap_status(self, ap):
+        """Check listener status on an AP. Returns dict with status + details."""
         ip = str(ap['ip_address'])
         user = ap['ssh_user']
         password = ap['ssh_password']
 
+        # Try HTTP health first
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as session:
+                async with session.get(f'http://{ip}:{LISTENER_PORT}/status') as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        await self.db.execute(
+                            "UPDATE access_points SET listener_status = 'deployed', "
+                            "listener_last_seen = NOW(), listener_server_ip = $1 WHERE id = $2",
+                            data.get('server_ip'), ap['id']
+                        )
+                        return {'status': 'installed', 'details': data}
+        except Exception:
+            pass
+
+        # SSH check
+        try:
+            rc, stdout, _ = await self._ssh_run(
+                ip, user, password,
+                'test -x /tmp/spectral_listener && echo binary_exists || echo no_binary'
+            )
+            if 'binary_exists' in stdout:
+                await self.db.execute(
+                    "UPDATE access_points SET listener_status = 'stopped' WHERE id = $1", ap['id']
+                )
+                return {'status': 'stopped', 'details': 'Binary exists but not running'}
+            else:
+                await self.db.execute(
+                    "UPDATE access_points SET listener_status = 'not_installed' WHERE id = $1", ap['id']
+                )
+                return {'status': 'not_installed', 'details': 'No listener binary found'}
+        except Exception as e:
+            await self.db.execute(
+                "UPDATE access_points SET listener_status = 'unreachable' WHERE id = $1", ap['id']
+            )
+            return {'status': 'unreachable', 'details': str(e)}
+
+    # --- Deploy listener to AP ---
+
+    async def _deploy_to_ap(self, ap, server_ip=None):
+        """Compile, deploy, and start the listener on an AP."""
         if not self.binary_ready:
-            log.error('Cannot deploy: binary not compiled')
-            return False
+            await self._compile_binary()
+        if not self.binary_ready:
+            return {'status': 'error', 'step': 'compile', 'details': 'Compilation failed'}
+
+        ip = str(ap['ip_address'])
+        user = ap['ssh_user']
+        password = ap['ssh_password']
+        target_ip = server_ip or SERVER_IP
+        steps = []
 
         try:
-            async with asyncssh.connect(
-                ip, username=user, password=password,
-                known_hosts=None, connect_timeout=10
-            ) as conn:
-                # Check if listener is running
-                result = await conn.run('pgrep -f spectral_listener', check=False)
-                if result.exit_status == 0:
-                    # Running but HTTP failed - might be stuck, kill and restart
-                    await conn.run('killall spectral_listener', check=False)
-                    await asyncio.sleep(1)
+            # Clean slate - kill everything and remove old binary
+            steps.append('Cleaning up...')
+            await self._ssh_run(ip, user, password,
+                'killall spectral_listener 2>/dev/null; sleep 2; '
+                'killall -9 spectral_listener 2>/dev/null; '
+                'rm -f /tmp/spectral_listener /tmp/spectral.log /tmp/sl.b64; '
+                'echo cleaned')
+            steps.append('Clean')
 
-                # Deploy binary via base64
-                await self._deploy_via_base64(conn, ip)
-                return True
+            # Deploy binary via base64
+            steps.append('Deploying binary...')
+            rc, stdout, stderr = await self._ssh_run(
+                ip, user, password,
+                'cat > /tmp/sl.b64 && base64 -d /tmp/sl.b64 > /tmp/spectral_listener && '
+                'chmod +x /tmp/spectral_listener && rm /tmp/sl.b64 && echo deployed',
+                stdin_data=self.b64_binary,
+                timeout=60
+            )
+            if 'deployed' not in stdout:
+                return {'status': 'error', 'step': 'deploy', 'details': stderr, 'steps': steps}
+            steps.append('Binary deployed')
 
+            # Start listener
+            steps.append('Starting listener...')
+            await self._ssh_run(
+                ip, user, password,
+                f'nohup /tmp/spectral_listener stream wifi0 17 {target_ip} {COLLECTOR_PORT} '
+                f'{LISTENER_PORT} > /tmp/spectral.log 2>&1 & sleep 1 && echo started'
+            )
+            steps.append('Listener started')
+
+            # Update DB
+            await self.db.execute(
+                "UPDATE access_points SET listener_status = 'deployed', "
+                "listener_last_seen = NOW(), listener_server_ip = $1 WHERE id = $2",
+                target_ip, ap['id']
+            )
+            await self.db.execute(
+                "INSERT INTO ap_health_log (ap_id, status, details) VALUES ($1, 'redeployed', $2)",
+                ap['id'], f'Streaming to {target_ip}:{COLLECTOR_PORT}'
+            )
+
+            log.info(f"Deployed listener on {ip} -> {target_ip}:{COLLECTOR_PORT}")
+            return {'status': 'deployed', 'server_ip': target_ip, 'steps': steps}
+
+        except asyncio.TimeoutError:
+            return {'status': 'error', 'step': 'timeout', 'details': 'Operation timed out', 'steps': steps}
         except Exception as e:
-            log.error(f'SSH to {ip} failed: {e}')
-            await self._log_health(ap['id'], 'ssh_failed', str(e))
-            return False
+            return {'status': 'error', 'step': 'unknown', 'details': str(e), 'steps': steps}
 
-    async def _deploy_via_base64(self, conn, ap_ip):
-        """Deploy the listener binary to AP via base64 encoding."""
-        import base64
+    # --- HTTP API endpoints ---
 
-        with open(LISTENER_BINARY, 'rb') as f:
-            binary_data = f.read()
+    async def api_health(self, request):
+        return web.json_response({'status': 'ok', 'binary_ready': self.binary_ready})
 
-        b64_data = base64.b64encode(binary_data).decode()
-
-        # Write base64, decode, make executable
-        result = await conn.run(
-            f'echo "{b64_data}" | base64 -d > /tmp/spectral_listener && '
-            f'chmod +x /tmp/spectral_listener',
-            check=False
+    async def api_check(self, request):
+        ap_id = int(request.match_info['id'])
+        ap = await self.db.fetchrow(
+            'SELECT id, ip_address, ssh_user, ssh_password FROM access_points WHERE id = $1', ap_id
         )
+        if not ap:
+            raise web.HTTPNotFound()
+        result = await self._check_ap_status(ap)
+        return web.json_response(result)
 
-        if result.exit_status != 0:
-            log.error(f'Deploy to {ap_ip} failed: {result.stderr}')
-            return
+    async def api_deploy(self, request):
+        ap_id = int(request.match_info['id'])
+        data = await request.json() if request.can_read_body else {}
+        server_ip = data.get('server_ip', SERVER_IP)
 
-        # Start the listener (stream mode with health API)
-        collector_ip = self.server_ip
-        await conn.run(
-            f'nohup /tmp/spectral_listener stream wifi0 17 {collector_ip} {COLLECTOR_PORT} '
-            f'> /dev/null 2>&1 &',
-            check=False
+        ap = await self.db.fetchrow(
+            'SELECT id, ip_address, ssh_user, ssh_password FROM access_points WHERE id = $1', ap_id
         )
+        if not ap:
+            raise web.HTTPNotFound()
+        result = await self._deploy_to_ap(ap, server_ip)
+        status_code = 200 if result['status'] == 'deployed' else 500
+        return web.json_response(result, status=status_code)
 
-        log.info(f'Deployed and started listener on {ap_ip} -> {collector_ip}:{COLLECTOR_PORT}')
+    async def api_discover(self, request):
+        """Scan an IP range for UniFi APs."""
+        data = await request.json()
+        subnet = data.get('subnet', '')  # e.g. "10.68.30.0/24"
+        ssh_user = data.get('ssh_user', '')
+        ssh_password = data.get('ssh_password', '')
 
-    async def _update_ap_status(self, ap_id, status):
-        await self.db.execute(
-            'UPDATE access_points SET listener_status = $1 WHERE id = $2',
-            status, ap_id
-        )
+        if not subnet or not ssh_user or not ssh_password:
+            return web.json_response({'error': 'Need subnet, ssh_user, ssh_password'}, status=400)
 
-    async def _log_health(self, ap_id, status, details=''):
-        await self.db.execute(
-            'INSERT INTO ap_health_log (ap_id, status, details) VALUES ($1, $2, $3)',
-            ap_id, status, details
-        )
+        # Parse subnet
+        import ipaddress
+        try:
+            network = ipaddress.ip_network(subnet, strict=False)
+        except ValueError as e:
+            return web.json_response({'error': f'Invalid subnet: {e}'}, status=400)
+
+        # Get already-registered APs
+        registered = await self.db.fetch('SELECT ip_address FROM access_points')
+        registered_ips = {str(r['ip_address']) for r in registered}
+
+        # Scan hosts concurrently (skip network and broadcast)
+        hosts = [str(ip) for ip in network.hosts()]
+        log.info(f'Discovering APs on {subnet} ({len(hosts)} hosts)')
+
+        results = []
+        semaphore = asyncio.Semaphore(20)  # Max 20 concurrent probes
+
+        async def probe(ip):
+            async with semaphore:
+                try:
+                    rc, stdout, _ = await self._ssh_run(
+                        ip, ssh_user, ssh_password,
+                        'cat /proc/sys/kernel/hostname; '
+                        'test -f /usr/sbin/spectraltool && echo "spectral:yes" || echo "spectral:no"; '
+                        'lsmod 2>/dev/null | grep -q qca_spectral && echo "module:yes" || echo "module:no"; '
+                        'iwconfig 2>/dev/null | grep -c IEEE || echo "0"',
+                        timeout=8
+                    )
+                    if rc == 0:
+                        lines = stdout.strip().split('\n')
+                        hostname = lines[0] if lines else ip
+                        has_spectral = any('spectral:yes' in l for l in lines)
+                        has_module = any('module:yes' in l for l in lines)
+                        return {
+                            'ip': ip,
+                            'hostname': hostname,
+                            'has_spectral': has_spectral,
+                            'has_module': has_module,
+                            'reachable': True,
+                            'already_registered': ip in registered_ips
+                        }
+                except Exception:
+                    pass
+                return None
+
+        tasks = [probe(ip) for ip in hosts]
+        probe_results = await asyncio.gather(*tasks)
+        results = [r for r in probe_results if r is not None]
+
+        log.info(f'Discovered {len(results)} APs on {subnet}')
+        return web.json_response({'found': results, 'scanned': len(hosts)})
+
+    # --- Background health check loop ---
+
+    async def _health_loop(self):
+        """Periodically check all APs and auto-remediate."""
+        while True:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+            try:
+                aps = await self.db.fetch(
+                    'SELECT id, name, ip_address, ssh_user, ssh_password, listener_status '
+                    'FROM access_points'
+                )
+                for ap in aps:
+                    result = await self._check_ap_status(ap)
+                    log.debug(f"AP {ap['name']} ({ap['ip_address']}): {result['status']}")
+            except Exception as e:
+                log.error(f'Health check error: {e}')
 
 
 async def main():

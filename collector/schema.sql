@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS offices (
     name TEXT NOT NULL UNIQUE,
     location TEXT,
     floor_plan_url TEXT,
+    default_ssh_user TEXT,
+    default_ssh_password TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -88,6 +90,29 @@ CREATE TABLE IF NOT EXISTS ap_health_log (
 );
 
 SELECT create_hypertable('ap_health_log', 'time', if_not_exists => TRUE);
+
+-- Saved baselines (survive restarts)
+CREATE TABLE IF NOT EXISTS baselines (
+    id SERIAL PRIMARY KEY,
+    ap_id INTEGER NOT NULL REFERENCES access_points(id) ON DELETE CASCADE,
+    radio TEXT NOT NULL,
+    baseline_energy DOUBLE PRECISION NOT NULL,
+    baseline_nonzero DOUBLE PRECISION NOT NULL,
+    samples INTEGER NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(ap_id, radio)
+);
+
+-- Scheduled baseline captures
+CREATE TABLE IF NOT EXISTS baseline_schedules (
+    id SERIAL PRIMARY KEY,
+    office_id INTEGER NOT NULL REFERENCES offices(id) ON DELETE CASCADE,
+    cron_time TIME NOT NULL DEFAULT '02:00',
+    duration_seconds INTEGER NOT NULL DEFAULT 300,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run TIMESTAMPTZ,
+    UNIQUE(office_id)
+);
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_spectral_ap_time ON spectral_readings (ap_id, time DESC);
