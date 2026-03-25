@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>C-You - All Offices</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">C-You</a>
+        <div class="nav-offices">
+            {% for o in offices %}
+            <a href="/office/{{ o.id }}" class="nav-link">{{ o.name }}</a>
+            {% endfor %}
+        </div>
+    </nav>
+
+    <div class="global-header">
+        <h1>All Offices</h1>
+        <button class="btn" onclick="showAddOffice()">+ Add Office</button>
+    </div>
+
+    <div class="office-grid" id="office-grid">
+        {% for o in offices %}
+        <a href="/office/{{ o.id }}" class="office-card" data-office-id="{{ o.id }}">
+            <div class="office-card-status" id="status-{{ o.id }}">
+                <div class="status-indicator unknown"></div>
+            </div>
+            <h2>{{ o.name }}</h2>
+            <p class="office-card-location">{{ o.location or '' }}</p>
+            <div class="office-card-details" id="details-{{ o.id }}">
+                <span class="ap-count">--</span>
+            </div>
+        </a>
+        {% endfor %}
+
+        {% if not offices %}
+        <div class="empty-state">
+            <p>No offices configured yet.</p>
+            <button class="btn" onclick="showAddOffice()">Add your first office</button>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Add Office Modal -->
+    <div class="modal" id="add-office-modal" style="display:none">
+        <div class="modal-content">
+            <h3>Add Office</h3>
+            <form id="add-office-form">
+                <label>Name <input type="text" name="name" required placeholder="e.g. Boston HQ"></label>
+                <label>Location <input type="text" name="location" placeholder="e.g. 123 Main St, Floor 3"></label>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="hideAddOffice()">Cancel</button>
+                    <button type="submit" class="btn">Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const OFFICES = {{ offices | tojson }};
+    </script>
+    <script src="/static/global.js"></script>
+</body>
+</html>

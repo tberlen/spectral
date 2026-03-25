@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cyou
+      POSTGRES_USER: cyou
+      POSTGRES_PASSWORD: REDACTED_DB_PASS
+    ports:
+      - "5433:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ../collector/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+
+  collector:
+    build: ../collector
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://cyou:REDACTED_DB_PASS@db:5432/cyou
+      UDP_PORT: "8766"
+    ports:
+      - "8766:8766/udp"
+
+  ap-manager:
+    build: ../ap-manager
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://cyou:REDACTED_DB_PASS@db:5432/cyou
+      BUILD_HOST: "REDACTED_BUILD_SERVER"
+      BUILD_USER: "root"
+      HEALTH_CHECK_INTERVAL: "60"
+    volumes:
+      - ../spectral:/opt/spectral:ro
+      - listener_binary:/opt/listener
+
+  dashboard:
+    build: ../dashboard
+    restart: unless-stopped
+    depends_on:
+      - db
+      - collector
+    environment:
+      DATABASE_URL: postgresql://cyou:REDACTED_DB_PASS@db:5432/cyou
+    ports:
+      - "8080:8080"
+
+volumes:
+  db_data:
+  listener_binary:
