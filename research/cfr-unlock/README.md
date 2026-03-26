@@ -164,3 +164,55 @@ All disabled/stripped by Ubiquiti.
 - `kpatch2.c` - Improved patcher with mmap fallback
 - `cfr_patch.c` - Page table walking patcher (couldn't find swapper_pg_dir)
 - `cfr_enable.c` - Kernel module source (needs matching headers to compile)
+
+## BREAKTHROUGH: Kernel Module Built and Loaded Successfully
+
+### Build Environment
+- **Kernel source:** linux-5.4.164 from kernel.org
+- **Kernel config:** Extracted from AP via `/proc/config.gz`
+- **Compiler:** arm-linux-gnueabi-gcc 12.2.0 (on Debian LXC)
+- **Build command:** `make -C /tmp/linux-5.4.164 M=/tmp ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules`
+- **Module size:** ~6KB
+- **Key:** `CONFIG_MODVERSIONS` is NOT set, so only vermagic needs to match
+
+### What Worked
+1. **Module loaded via `insmod`** - vermagic matched perfectly
+2. **`wlan_cfr_is_feature_disabled` patched** - function now returns 0
+3. **`cfr_timer 1` now succeeds** (previously returned -22)
+4. **`tgt_cfr_support_set()` called** - marked CFR as supported
+5. **`cfr_initialize_pdev()` called** - attempted full CFR init
+
+### What Failed
+CFR initialization hits a hardware limitation:
+```
+target_if_dbr_init_ring: srng setup failed
+target_if_direct_buf_rx_module_register: init dbr ring fail, srng_id 0, status 16
+cfr_enh_init_pdev: Failed to register with dbr
+```
+
+The **Direct Buffer Ring (DBR)** - the DMA ring that carries CFR data from firmware to host memory - cannot be initialized after boot. The radio firmware configures its DMA rings during initialization based on advertised capabilities. Since CFR wasn't advertised, no DBR ring was allocated for it.
+
+### Conclusion
+The host-side software is fully unlockable. The blocker is the **firmware's DMA ring allocation** which happens at boot time and cannot be reconfigured. To get CFR working, the firmware itself would need to:
+1. Advertise CFR as a supported service during WMI init
+2. Allocate a DBR ring for CFR data during ring setup
+
+This is a firmware-level change, not a host/driver change.
+
+### Build Instructions
+```bash
+# On a machine with arm-linux-gnueabi-gcc:
+tar xf linux-5.4.164.tar.xz
+cp kernel_config.txt linux-5.4.164/.config
+cd linux-5.4.164
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- olddefconfig
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules_prepare
+
+# Build the module
+cd /path/to/cfr_enable.c
+make -C /path/to/linux-5.4.164 M=$(pwd) ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- modules
+
+# Deploy to AP
+base64 cfr_enable.ko | ssh user@ap 'base64 -d > /tmp/cfr_enable.ko'
+ssh user@ap 'insmod /tmp/cfr_enable.ko'
+```
