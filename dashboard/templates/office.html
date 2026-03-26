@@ -102,6 +102,11 @@
                     <button class="btn btn-sm" onclick="deployAP({{ ap.id }})" id="ap-deploy-{{ ap.id }}">Install</button>
                     <button class="btn btn-sm btn-secondary" onclick="baselineAP({{ ap.id }})" id="ap-baseline-{{ ap.id }}">Baseline</button>
                     <button class="btn btn-sm btn-secondary" onclick="editAP({{ ap.id }}, '{{ ap.name }}', '{{ ap.ip_address }}', '{{ ap.model }}')">Edit</button>
+                    <button class="btn btn-sm btn-secondary" id="ap-lock-{{ ap.id }}"
+                            onclick="toggleAPLock({{ ap.id }})"
+                            title="{{ 'API locked' if ap.api_token else 'API unlocked' }}">
+                        {{ ('&#x1F512;' if ap.api_token else '&#x1F513;')|safe }}
+                    </button>
                     <button class="btn btn-sm btn-secondary" onclick="deleteAP({{ ap.id }}, '{{ ap.name }}')" style="color:var(--red);">X</button>
                 </div>
                 <div class="ap-intensity" id="ap-intensity-{{ ap.id }}">--</div>
@@ -283,6 +288,22 @@
         const OFFICE_TIMEZONE = '{{ office.timezone or "America/New_York" }}';
         const DEFAULT_SSH_USER = '{{ office.default_ssh_user or "" }}';
         const DEFAULT_SSH_PASSWORD = '{{ office.default_ssh_password or "" }}';
+
+        async function toggleAPLock(apId) {
+            const btn = document.getElementById(`ap-lock-${apId}`);
+            btn.disabled = true;
+            btn.textContent = '...';
+            try {
+                const resp = await fetch(`/api/aps/${apId}/toggle-lock`, {method: 'POST'});
+                const data = await resp.json();
+                const locked = data.status === 'deployed' && data.steps;
+                // Reload page to get fresh state
+                location.reload();
+            } catch (e) {
+                btn.textContent = 'err';
+                btn.disabled = false;
+            }
+        }
     </script>
     <script src="/static/app.js?v=22"></script>
 </body>

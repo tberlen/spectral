@@ -7,8 +7,6 @@ services:
       POSTGRES_DB: spectral
       POSTGRES_USER: spectral
       POSTGRES_PASSWORD: REDACTED_DB_PASS
-    ports:
-      - "5433:5432"
     volumes:
       - spectral_db_data:/var/lib/postgresql/data
       - ../collector/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
@@ -24,7 +22,6 @@ services:
       UDP_PORT: "8766"
     ports:
       - "8766:8766/udp"
-      - "8767:8767"
 
   spectral-manager:
     build: ../ap-manager

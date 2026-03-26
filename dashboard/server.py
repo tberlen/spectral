@@ -67,6 +67,7 @@ class Dashboard:
         self.app.router.add_get('/api/aps/{id}/health', self.api_ap_health)
         self.app.router.add_post('/api/aps/{id}/deploy', self.api_deploy_listener)
         self.app.router.add_post('/api/aps/{id}/check', self.api_check_listener)
+        self.app.router.add_post('/api/aps/{id}/toggle-lock', self.api_toggle_ap_lock)
         self.app.router.add_post('/api/discover', self.api_discover)
 
         # API - Baseline & Sensitivity
@@ -232,17 +233,20 @@ class Dashboard:
 
     async def api_clients(self, request):
         office_id = int(request.match_info['office_id'])
+
         data, status = await self._proxy_to_manager('GET', f'/api/clients/{office_id}')
         return web.json_response(data, status=status)
 
     async def api_search_client(self, request):
         office_id = int(request.match_info['office_id'])
+
         q = request.query.get('q', '')
         data, status = await self._proxy_to_manager('GET', f'/api/clients/{office_id}/search?q={q}')
         return web.json_response(data, status=status)
 
     async def api_first_in(self, request):
         office_id = int(request.match_info['office_id'])
+
         data, status = await self._proxy_to_manager('GET', f'/api/clients/{office_id}/first-in')
         return web.json_response(data, status=status)
 
@@ -427,6 +431,20 @@ class Dashboard:
         ap_id = int(request.match_info['id'])
         body = await request.json() if request.can_read_body else {}
         data, status = await self._proxy_to_manager('POST', f'/api/aps/{ap_id}/deploy', body)
+        return web.json_response(data, status=status)
+
+    async def api_toggle_ap_lock(self, request):
+        """Toggle API token on an AP's listener. Redeploys with or without token."""
+        ap_id = int(request.match_info['id'])
+        ap = await self.db.fetchrow('SELECT api_token FROM access_points WHERE id = $1', ap_id)
+        if not ap:
+            raise web.HTTPNotFound()
+        # Toggle: if has token, remove it; if no token, add one
+        with_token = not bool(ap['api_token'])
+        data, status = await self._proxy_to_manager(
+            'POST', f'/api/aps/{ap_id}/deploy',
+            {'with_token': with_token}
+        )
         return web.json_response(data, status=status)
 
     async def _proxy_to_collector(self, method, path, data=None):

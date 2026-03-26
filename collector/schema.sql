@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS offices (
     default_ssh_password TEXT,
     timezone TEXT NOT NULL DEFAULT 'America/New_York',
     sensitivity REAL NOT NULL DEFAULT 1.0,
+    clients_locked BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS access_points (
     listener_status TEXT DEFAULT 'unknown',  -- unknown, deployed, unreachable, stale
     listener_last_seen TIMESTAMPTZ,
     listener_server_ip INET,
+    api_token TEXT,  -- optional token for listener /status auth
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

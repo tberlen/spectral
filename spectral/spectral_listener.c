@@ -82,6 +82,7 @@ static char g_iface[32] = "";
 static int g_http_port = HTTP_PORT_DEFAULT;
 static char g_hostname[64] = "";
 static char g_my_ip[64] = "";
+static char g_api_token[128] = "";  /* Optional token for /status auth */
 
 static void discover_identity(void)
 {
@@ -382,6 +383,31 @@ static void *http_thread(void *arg)
         }
         else if (strstr(req, "GET /status") == req + 4 ||
                  strstr(req, "GET /status ") != NULL) {
+            /* Check token if configured */
+            if (g_api_token[0]) {
+                char *auth = strstr(req, "Authorization: Bearer ");
+                int authorized = 0;
+                if (auth) {
+                    auth += 22; /* skip "Authorization: Bearer " */
+                    char *end = strstr(auth, "\r\n");
+                    if (end) {
+                        size_t len = end - auth;
+                        if (len == strlen(g_api_token) && strncmp(auth, g_api_token, len) == 0)
+                            authorized = 1;
+                    }
+                }
+                if (!authorized) {
+                    snprintf(response, sizeof(response),
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Content-Length: 24\r\n"
+                        "Connection: close\r\n"
+                        "\r\n{\"error\":\"unauthorized\"}");
+                    write(fd, response, strlen(response));
+                    close(fd);
+                    continue;
+                }
+            }
             /* Detailed status */
             time_t uptime = time(NULL) - g_start_time;
             snprintf(body, sizeof(body),
@@ -630,6 +656,13 @@ static int cmd_stream(const char *iface, int protocol,
     strncpy(g_server_ip, host, sizeof(g_server_ip) - 1);
     g_server_port = port;
     strncpy(g_iface, iface, sizeof(g_iface) - 1);
+
+    /* Optional API token for /status auth */
+    const char *token_env = getenv("API_TOKEN");
+    if (token_env && token_env[0]) {
+        strncpy(g_api_token, token_env, sizeof(g_api_token) - 1);
+        fprintf(stderr, "API token set (%zu chars)\n", strlen(g_api_token));
+    }
 
     /* Discover own IP and hostname */
     discover_identity();

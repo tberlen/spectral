@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+import secrets
 import socket
 
 import aiohttp
@@ -41,6 +42,8 @@ class APManager:
     def _setup_routes(self):
         self.app.router.add_post('/api/aps/{id}/check', self.api_check)
         self.app.router.add_post('/api/aps/{id}/deploy', self.api_deploy)
+        self.app.router.add_post('/api/offices/{office_id}/deploy', self.api_deploy_office)
+        self.app.router.add_post('/api/offices/{office_id}/update', self.api_update_office)
         self.app.router.add_post('/api/discover', self.api_discover)
         self.app.router.add_get('/api/clients/{office_id}', self.api_clients)
         self.app.router.add_get('/api/clients/{office_id}/search', self.api_search_client)
@@ -130,10 +133,13 @@ class APManager:
         http_ok = False
         http_data = None
         try:
+            headers = {}
+            if ap.get('api_token'):
+                headers['Authorization'] = f'Bearer {ap["api_token"]}'
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=8)
             ) as session:
-                async with session.get(f'http://{ip}:{LISTENER_PORT}/status') as resp:
+                async with session.get(f'http://{ip}:{LISTENER_PORT}/status', headers=headers) as resp:
                     if resp.status == 200:
                         http_data = await resp.json()
                         http_ok = True
@@ -146,6 +152,12 @@ class APManager:
                 "listener_last_seen = NOW(), listener_server_ip = $1 WHERE id = $2",
                 http_data.get('server_ip'), ap['id']
             )
+            # Stale server IP detection — auto-redeploy if pointing to wrong collector
+            reported_ip = http_data.get('server_ip', '')
+            if reported_ip and reported_ip != SERVER_IP:
+                log.warning(f"AP {ap['name']} ({ip}) has stale server IP {reported_ip}, expected {SERVER_IP} — redeploying")
+                await self._deploy_to_ap(ap)
+                return {'status': 'redeployed', 'details': f'Stale IP {reported_ip} -> {SERVER_IP}'}
             return {'status': 'installed', 'details': http_data}
 
         # HTTP failed - SSH in and check process + binary directly
@@ -221,8 +233,9 @@ class APManager:
             pass
         return 100  # default assumption
 
-    async def _deploy_to_ap(self, ap, server_ip=None):
-        """Compile, deploy, and start the listener on an AP."""
+    async def _deploy_to_ap(self, ap, server_ip=None, with_token=None):
+        """Compile, deploy, and start the listener on an AP.
+        with_token: True=generate token, False=no token, None=keep existing"""
         if not self.binary_ready:
             await self._compile_binary()
         if not self.binary_ready:
@@ -234,6 +247,14 @@ class APManager:
         target_ip = server_ip or SERVER_IP
         steps = []
         expected_size = len(base64.b64decode(self.b64_binary))
+
+        # Determine API token
+        if with_token is True:
+            api_token = secrets.token_urlsafe(32)
+        elif with_token is False:
+            api_token = None
+        else:
+            api_token = ap.get('api_token')  # keep existing
 
         try:
             # Step 0: Measure latency and set timeouts
@@ -316,9 +337,10 @@ class APManager:
 
             # Step 6: Start listener
             steps.append('Starting listener...')
+            token_export = f'export API_TOKEN={api_token}; ' if api_token else ''
             await self._ssh_run(
                 ip, user, password,
-                f'nohup /tmp/spectral_listener stream wifi0 17 {target_ip} {COLLECTOR_PORT} '
+                f'{token_export}nohup /tmp/spectral_listener stream wifi0 17 {target_ip} {COLLECTOR_PORT} '
                 f'{LISTENER_PORT} > /tmp/spectral.log 2>&1 & sleep 2 && echo started',
                 timeout=ssh_timeout + 5
             )
@@ -339,8 +361,8 @@ class APManager:
             # Update DB
             await self.db.execute(
                 "UPDATE access_points SET listener_status = 'deployed', "
-                "listener_last_seen = NOW(), listener_server_ip = $1 WHERE id = $2",
-                target_ip, ap['id']
+                "listener_last_seen = NOW(), listener_server_ip = $1, api_token = $2 WHERE id = $3",
+                target_ip, api_token, ap['id']
             )
             await self.db.execute(
                 "INSERT INTO ap_health_log (ap_id, status, details) VALUES ($1, 'redeployed', $2)",
@@ -374,15 +396,73 @@ class APManager:
         ap_id = int(request.match_info['id'])
         data = await request.json() if request.can_read_body else {}
         server_ip = data.get('server_ip', SERVER_IP)
+        with_token = data.get('with_token', None)
 
         ap = await self.db.fetchrow(
-            'SELECT id, ip_address, ssh_user, ssh_password FROM access_points WHERE id = $1', ap_id
+            'SELECT id, ip_address, ssh_user, ssh_password, api_token FROM access_points WHERE id = $1', ap_id
         )
         if not ap:
             raise web.HTTPNotFound()
-        result = await self._deploy_to_ap(ap, server_ip)
+        result = await self._deploy_to_ap(ap, server_ip, with_token=with_token)
         status_code = 200 if result['status'] == 'deployed' else 500
         return web.json_response(result, status=status_code)
+
+    async def api_deploy_office(self, request):
+        """Deploy (fresh) listeners to all APs in an office."""
+        office_id = int(request.match_info['office_id'])
+        data = await request.json() if request.can_read_body else {}
+        server_ip = data.get('server_ip', SERVER_IP)
+
+        aps = await self.db.fetch(
+            'SELECT id, name, ip_address, ssh_user, ssh_password FROM access_points WHERE office_id = $1',
+            office_id
+        )
+        if not aps:
+            raise web.HTTPNotFound(text='No APs found for this office')
+
+        # Force recompile for fresh deploy
+        self.binary_ready = False
+        results = {}
+        for ap in aps:
+            log.info(f"Deploying to {ap['name']} ({ap['ip_address']})")
+            result = await self._deploy_to_ap(ap, server_ip)
+            results[ap['name']] = result
+        return web.json_response(results)
+
+    async def api_update_office(self, request):
+        """Update server IP on all running listeners in an office (kill + restart, no recompile)."""
+        office_id = int(request.match_info['office_id'])
+        data = await request.json() if request.can_read_body else {}
+        server_ip = data.get('server_ip', SERVER_IP)
+
+        aps = await self.db.fetch(
+            'SELECT id, name, ip_address, ssh_user, ssh_password FROM access_points WHERE office_id = $1',
+            office_id
+        )
+        if not aps:
+            raise web.HTTPNotFound(text='No APs found for this office')
+
+        results = {}
+        for ap in aps:
+            ip = str(ap['ip_address'])
+            try:
+                # Kill existing listener and restart with new server IP
+                await self._ssh_run(
+                    ip, ap['ssh_user'], ap['ssh_password'],
+                    f'pkill -f spectral_listener; sleep 1; '
+                    f'/tmp/spectral_listener stream {server_ip} 8766 > /tmp/spectral.log 2>&1 &',
+                    timeout=15
+                )
+                await self.db.execute(
+                    "UPDATE access_points SET listener_server_ip = $1 WHERE id = $2",
+                    server_ip, ap['id']
+                )
+                results[ap['name']] = {'status': 'updated', 'server_ip': server_ip}
+                log.info(f"Updated {ap['name']} ({ip}) -> {server_ip}")
+            except Exception as e:
+                results[ap['name']] = {'status': 'error', 'details': str(e)}
+                log.error(f"Failed to update {ap['name']} ({ip}): {e}")
+        return web.json_response(results)
 
     async def api_clients(self, request):
         """Get all clients currently in an office."""
@@ -683,7 +763,7 @@ class APManager:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             try:
                 aps = await self.db.fetch(
-                    'SELECT id, name, ip_address, ssh_user, ssh_password, listener_status '
+                    'SELECT id, name, ip_address, ssh_user, ssh_password, listener_status, api_token '
                     'FROM access_points'
                 )
                 for ap in aps:
