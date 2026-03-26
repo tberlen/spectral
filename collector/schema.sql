@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS offices (
     floor_plan_url TEXT,
     default_ssh_user TEXT,
     default_ssh_password TEXT,
+    timezone TEXT NOT NULL DEFAULT 'America/New_York',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -113,6 +114,36 @@ CREATE TABLE IF NOT EXISTS baseline_schedules (
     last_run TIMESTAMPTZ,
     UNIQUE(office_id)
 );
+
+-- Connected clients (current snapshot)
+CREATE TABLE IF NOT EXISTS clients (
+    id SERIAL PRIMARY KEY,
+    mac TEXT NOT NULL,
+    hostname TEXT,
+    identity_1x TEXT,
+    ip_address TEXT,
+    ap_id INTEGER REFERENCES access_points(id) ON DELETE CASCADE,
+    ssid TEXT,
+    radio TEXT,
+    rssi INTEGER,
+    signal INTEGER,
+    uptime INTEGER,
+    last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    first_seen_today TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(mac, ap_id)
+);
+
+-- Client arrival/departure events
+CREATE TABLE IF NOT EXISTS client_events (
+    time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    mac TEXT NOT NULL,
+    hostname TEXT,
+    identity_1x TEXT,
+    ap_id INTEGER REFERENCES access_points(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL
+);
+
+SELECT create_hypertable('client_events', 'time', if_not_exists => TRUE);
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_spectral_ap_time ON spectral_readings (ap_id, time DESC);

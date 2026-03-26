@@ -54,6 +54,15 @@ class Dashboard:
         self.app.router.add_get('/api/occupancy/office/{office_id}', self.api_office_occupancy)
         self.app.router.add_get('/api/occupancy/ap/{ap_id}', self.api_ap_occupancy)
 
+        # Pages - Who's Here
+        self.app.router.add_get('/people/{office_id}', self.page_people)
+
+        # API - Clients (proxy to AP manager)
+        self.app.router.add_get('/api/clients/{office_id}', self.api_clients)
+        self.app.router.add_get('/api/clients/{office_id}/search', self.api_search_client)
+        self.app.router.add_get('/api/clients/{office_id}/first-in', self.api_first_in)
+        self.app.router.add_post('/api/clients/static', self.api_toggle_static)
+
         # API - AP Health & Deployment
         self.app.router.add_get('/api/aps/{id}/health', self.api_ap_health)
         self.app.router.add_post('/api/aps/{id}/deploy', self.api_deploy_listener)
@@ -145,9 +154,11 @@ class Dashboard:
             'UPDATE offices SET name = COALESCE($1, name), location = COALESCE($2, location), '
             'floor_plan_url = COALESCE($3, floor_plan_url), '
             'default_ssh_user = COALESCE($4, default_ssh_user), '
-            'default_ssh_password = COALESCE($5, default_ssh_password) WHERE id = $6',
+            'default_ssh_password = COALESCE($5, default_ssh_password), '
+            'timezone = COALESCE($6, timezone) WHERE id = $7',
             data.get('name'), data.get('location'), data.get('floor_plan_url'),
-            data.get('default_ssh_user'), data.get('default_ssh_password'), office_id
+            data.get('default_ssh_user'), data.get('default_ssh_password'),
+            data.get('timezone'), office_id
         )
         return web.json_response({'ok': True})
 
@@ -208,6 +219,37 @@ class Dashboard:
         ap_id = int(request.match_info['id'])
         await self.db.execute('DELETE FROM access_points WHERE id = $1', ap_id)
         return web.json_response({'ok': True})
+
+    async def page_people(self, request):
+        office_id = int(request.match_info['office_id'])
+        template = self.templates.get_template('people.html')
+        office = await self.db.fetchrow('SELECT * FROM offices WHERE id = $1', office_id)
+        if not office:
+            raise web.HTTPNotFound()
+        offices = await self.db.fetch('SELECT id, name FROM offices ORDER BY name')
+        html = template.render(office=dict(office), offices=[dict(r) for r in offices])
+        return web.Response(text=html, content_type='text/html')
+
+    async def api_clients(self, request):
+        office_id = int(request.match_info['office_id'])
+        data, status = await self._proxy_to_manager('GET', f'/api/clients/{office_id}')
+        return web.json_response(data, status=status)
+
+    async def api_search_client(self, request):
+        office_id = int(request.match_info['office_id'])
+        q = request.query.get('q', '')
+        data, status = await self._proxy_to_manager('GET', f'/api/clients/{office_id}/search?q={q}')
+        return web.json_response(data, status=status)
+
+    async def api_first_in(self, request):
+        office_id = int(request.match_info['office_id'])
+        data, status = await self._proxy_to_manager('GET', f'/api/clients/{office_id}/first-in')
+        return web.json_response(data, status=status)
+
+    async def api_toggle_static(self, request):
+        body = await request.json()
+        data, status = await self._proxy_to_manager('POST', '/api/clients/static', body)
+        return web.json_response(data, status=status)
 
     # --- Occupancy API ---
 

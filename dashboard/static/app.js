@@ -586,10 +586,11 @@ async function addDiscoveredAP(ip, hostname, btn) {
 
 // --- Edit / Delete AP ---
 
-function editAP(apId, name, ip) {
+function editAP(apId, name, ip, model) {
     document.getElementById('edit-ap-id').value = apId;
     document.getElementById('edit-ap-name').value = name;
     document.getElementById('edit-ap-ip').value = ip;
+    document.getElementById('edit-ap-model').value = model || 'U7 Pro Max';
     document.getElementById('edit-ap-user').value = '';
     document.getElementById('edit-ap-pass').value = '';
     document.getElementById('edit-ap-modal').style.display = 'flex';
@@ -603,7 +604,7 @@ function setupEditAPForm() {
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const apId = document.getElementById('edit-ap-id').value;
-        const data = { name: form.name.value, ip_address: form.ip_address.value };
+        const data = { name: form.name.value, ip_address: form.ip_address.value, model: form.model.value };
         if (form.ssh_user.value) data.ssh_user = form.ssh_user.value;
         if (form.ssh_password.value) data.ssh_password = form.ssh_password.value;
 
@@ -635,6 +636,11 @@ function hideAddAP() { document.getElementById('add-ap-modal').style.display = '
 
 async function showOfficeSettings() {
     document.getElementById('office-settings-modal').style.display = 'flex';
+    // Set timezone dropdown
+    const tzSelect = document.getElementById('office-timezone');
+    if (tzSelect && typeof OFFICE_TIMEZONE !== 'undefined') {
+        tzSelect.value = OFFICE_TIMEZONE;
+    }
     // Load schedule
     try {
         const resp = await fetch(`/api/offices/${OFFICE_ID}/schedule`);
@@ -660,6 +666,7 @@ function setupOfficeSettingsForm() {
             body: JSON.stringify({
                 name: form.name.value,
                 location: form.location.value,
+                timezone: document.getElementById('office-timezone').value,
                 default_ssh_user: form.default_ssh_user.value,
                 default_ssh_password: form.default_ssh_password.value,
             })
