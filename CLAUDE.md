@@ -51,6 +51,46 @@ AP Manager --SSH/HTTP--> UniFi APs            Occupancy Engine
                                                    Dashboard
 ```
 
+### Network Security & AP Locking
+
+**What's exposed to the network:**
+
+| Port | Service | Exposed | Contains sensitive data? |
+|------|---------|---------|------------------------|
+| 8080 | Dashboard | Yes (browser UI) | Occupancy data only (no PII) |
+| 8766/udp | Collector | Yes (APs send data here) | Raw spectral FFT bins (no PII) |
+| 8081 | AP Manager | No (Docker internal) | Client MACs, hostnames, 1x identities |
+| 5432 | Database | No (Docker internal) | Everything |
+| 8767 | Collector API | No (Docker internal) | Occupancy state |
+
+**What's on each AP (port 8080):**
+
+Each AP runs the spectral listener with a built-in HTTP server:
+- `/health` — Always open. Returns `{"status":"ok"}`. Used for basic alive checks.
+- `/status` — Returns hostname, AP IP, server IP, uptime, sample count. Reveals infrastructure topology.
+
+**The lock icon** controls `/status` authentication per AP:
+- **Unlocked** — `/status` is open to anyone on the network
+- **Locked** — `/status` requires a Bearer token. Returns `{"error":"unauthorized"}` without it.
+
+When you lock an AP, the AP manager:
+1. Generates a random 32-character token
+2. Redeploys the listener with `API_TOKEN=<token>` set
+3. Stores the token in the database
+4. Uses the stored token for its own health checks
+
+The token never appears in the dashboard UI. Each AP gets its own unique token.
+
+**"Lock All / Unlock All"** toggles all APs in an office at once. Skips APs already in the desired state. Shows `X/Y` count of locked APs.
+
+**Client data flow (Who's Here):**
+
+```
+AP Manager --SSH--> AP (mca-dump) --> DB --> Dashboard API --> Browser
+```
+
+Client data (MACs, hostnames, 802.1X identities) travels only over SSH from the APs, stored in the DB, and served by the dashboard. The AP manager and DB are Docker-internal only, so client data is never directly exposed to the network. The dashboard serves it on `:8080/api/clients/*` but only to browsers accessing the UI.
+
 ## Hardware
 
 ### Validated UniFi AP Models
