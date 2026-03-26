@@ -326,3 +326,35 @@ Options:
 4. Use the AP Manager's auto-remediation to push the module after reboot detection
 
 Option 4 is immediately actionable with our existing Spectral infrastructure.
+
+## Flash/Firmware Modification: BLOCKED
+
+### eMMC Partition Layout
+| Partition | Name | Size | Purpose |
+|-----------|------|------|---------|
+| mmcblk0p1 | 0:HLOS | 64MB | Primary firmware (FIT image) |
+| mmcblk0p2 | 0:HLOS_1 | 64MB | Backup firmware (A/B) |
+| mmcblk0p3 | bs | 1KB | Boot selector |
+| mmcblk0p4 | cfg | 1MB | Persistent config (/etc/persistent/) |
+| mmcblk0p5 | log | 2GB | Log partition |
+
+### Security Chain
+1. **SBL1** (mtd0) - Qualcomm first-stage bootloader
+2. **QSEE** (mtd3) - Qualcomm Secure Execution Environment (TrustZone)
+3. **U-Boot** (mtd7) - Second-stage bootloader, contains `bootubnt` and hash verify
+4. **HLOS** - FIT image with kernel + squashfs rootfs
+5. **fwupdate.real** - RSA + SHA256 signature verification for updates
+
+### Why We Can't Modify Flash
+- eMMC hardware write protection (`/sys/block/mmcblk0/ro = 1`)
+- dd to partition returns "Operation not permitted"
+- `echo 0 > /sys/.../ro` has no effect
+- `fwupdate.real` uses `EVP_VerifyFinal` (RSA signature check)
+- Full Qualcomm secure boot chain from SBL1 through TrustZone
+- No access to Ubiquiti's RSA private signing key
+
+### Persistent Storage Limitations
+- `/etc/persistent/` (cfg partition) is cleaned on boot
+- Only factory config files survive (mgmt, SSH keys, BLE certs)
+- Custom files are removed during boot initialization
+- No overlay filesystem for /etc
