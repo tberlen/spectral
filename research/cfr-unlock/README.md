@@ -1,0 +1,166 @@
+# CFR (Channel Frequency Response) Unlock Research
+
+## Summary
+
+CFR is essentially CSI (Channel State Information) - per-subcarrier amplitude and phase data that provides much higher fidelity than spectral FFT. The entire CFR software stack exists on UniFi APs but is disabled by a firmware feature bit.
+
+## What We Found
+
+### CFR Code Exists End-to-End
+
+**Kernel Symbols (from `/proc/kallsyms`):**
+```
+wlan_cfr_is_feature_disabled     [umac]     <- THE GATE
+wlan_cfr_is_ini_disabled         [umac]
+ucfg_cfr_start_capture           [umac]
+ucfg_cfr_stop_capture            [umac]
+ucfg_cfr_set_capture_count       [umac]
+ucfg_cfr_set_capture_interval    [umac]
+ucfg_cfr_set_capture_duration    [umac]
+ucfg_cfr_set_bw_nss              [umac]
+ucfg_cfr_set_frame_type_subtype  [umac]
+ucfg_cfr_set_tara_config         [umac]    (TA/RA filter)
+ucfg_cfr_set_en_bitmap           [umac]
+ucfg_cfr_config_rcc              [umac]    (Receive Chain Capture)
+ucfg_cfr_get_rcc_enabled         [umac]
+send_peer_cfr_capture_cmd_tlv    [wifi_3_0]
+send_cfr_rcc_cmd_tlv             [wifi_3_0]
+cfr_dbr_event_handler            [qca_ol]  (Direct Buffer Ring handler)
+enh_cfr_dbr_event_handler        [qca_ol]  (Enhanced CFR handler)
+target_if_cfr_init_pdev          [qca_ol]
+target_if_cfr_start_capture      [qca_ol]
+target_if_cfr_config_rcc         [qca_ol]
+target_if_cfr_periodic_peer_cfr_enable [qca_ol]
+init_deinit_cfr_support_enable   [qca_ol]
+dp_rx_handle_cfr                 [monitor]
+dp_rx_mon_populate_cfr_info      [monitor]
+```
+
+### DebugFS Files Present
+```
+/sys/kernel/debug/qdf/cfrwifi0/cfr_dump0   <- CFR data relay file (per radio)
+/sys/kernel/debug/qdf/cfrwifi1/cfr_dump0
+/sys/kernel/debug/qdf/cfrwifi2/cfr_dump0
+/sys/kernel/debug/qdf/dbr_ring_debug/      <- Direct Buffer Ring (used for CFR)
+```
+
+### CFR Test App Exists
+```
+/usr/sbin/cfr_test_app -i <interfacename>
+```
+Reads from `/sys/kernel/debug/qdf/cfr%s/cfr_dump0` and writes to `/tmp/cfr_dump_<iface>_<timestamp>.bin`. This is Qualcomm's reference CFR capture tool.
+
+### cfg80211tool CFR Commands
+```
+cfg80211tool wifi0 cfr_timer <value>          <- Set capture timer
+cfg80211tool wifi0 get_cfr_timer              <- Get timer
+cfg80211tool wifi0 get_cfr_capture_status     <- Check status (always returns 0)
+```
+
+## What's Blocking It
+
+### The Gate Function
+`wlan_cfr_is_feature_disabled` in the `umac` module returns `true`, which causes ALL CFR commands to be rejected with error -22 (EINVAL).
+
+This function checks the **firmware service capability bits** that the radio firmware advertises during initialization. The Ubiquiti firmware blob does not set the CFR support bit.
+
+### Error Chain
+```
+User runs: cfg80211tool wifi0 cfr_timer 100
+  -> cfg80211 sends NL80211 command
+    -> wlan_cfg80211_cfr_params() in umac
+      -> wlan_cfr_is_feature_disabled() returns TRUE
+        -> Returns -EINVAL (-22)
+```
+
+### Evidence
+- `cfg80211tool wifi0 cfr_timer 1` succeeds (value 1 may be a query/noop)
+- `cfg80211tool wifi0 cfr_timer 10` fails with -22
+- `get_cfr_capture_status` always returns 0
+- `cfr_test_app -i wifi1` starts but captures 0 bytes
+- All debugfs cfr_dump files remain empty (0 bytes)
+
+## What We Tried
+
+### 1. cfg80211tool Commands
+All CFR-related commands return -22 (EINVAL) because the feature check fails.
+
+### 2. wifitool beeliner_fw_test
+```
+wifitool wifi1ap3 beeliner_fw_test 107 1
+```
+Returns success (rc=0) but doesn't actually enable CFR. Command 107 may not be the CFR enable command.
+
+### 3. Direct Memory Patching via /dev/mem
+Attempted to overwrite `wlan_cfr_is_feature_disabled` (at virtual address 0x7fb14ba8 in umac module) to always return 0.
+
+**Problem:** Module memory is in vmalloc space. `/dev/mem` only provides access to physical addresses. Translating vmalloc virtual addresses to physical requires walking the kernel page tables, but:
+- `swapper_pg_dir` is not exported in `/proc/kallsyms`
+- We could not locate the physical address of the page tables
+- ARM page table walk via devmem was unsuccessful
+
+### 4. /dev/kmem
+Exists but `mmap()` returns "Input/output error" for vmalloc addresses. `lseek()`+`read()` returns -1.
+
+### 5. Kernel Module Loading
+`insmod` is available but we cannot compile kernel modules without the matching kernel headers for 5.4.164 on IPQ5018.
+
+### 6. kprobes / ftrace / livepatch
+All disabled/stripped by Ubiquiti.
+
+## Paths Forward
+
+### Most Likely to Succeed
+
+1. **Build matching kernel module**
+   - Need QSDK for IPQ5018 with kernel 5.4.164
+   - Build a tiny .ko that uses `kallsyms_lookup_name()` to find `wlan_cfr_is_feature_disabled` and patches it in kernel space
+   - vermagic must match: `5.4.164 SMP preempt mod_unload ARMv7 p2v8`
+   - Platform: `IPQ5018/AP-MP03.1`
+
+2. **ESP32-C5 external CSI capture**
+   - Already proven in the barn project (see-you)
+   - $8 per board, captures CSI from AP beacon frames
+   - No AP modification needed
+   - Firmware already exists
+
+3. **OpenWrt with ath11k**
+   - IPQ5018 is supported by ath11k in OpenWrt
+   - ath11k has CFR support in the open-source driver
+   - Would require replacing Ubiquiti firmware entirely (destructive)
+
+### Long Shots
+
+4. **Find the page table physical address**
+   - Could try brute-force scanning physical memory for valid page table structures
+   - Risky - reading wrong addresses could hang the system
+
+5. **Firmware modification**
+   - Modify the Qualcomm firmware blob to set the CFR service bit
+   - Extremely difficult without firmware documentation
+
+6. **Ubiquiti feature request**
+   - Ubiquiti could enable CFR in a firmware update
+   - Unlikely without significant customer demand
+
+## Test Environment
+
+- **AP:** Garage-AP (home lab)
+- **Model:** U6-IW
+- **IP:** REDACTED_LAB_IP
+- **SSH:** REDACTED_SSH_USER / REDACTED_SSH_PASS
+- **SoC:** IPQ5018 (Maple) 1.1
+- **Board ID:** ap-mp03.1
+- **Kernel:** 5.4.164 SMP preempt ARMv7
+- **Physical memory:** 0x41000000-0x4AAFFFFF, 0x52200000-0x7FFF7FFF
+- **Kernel virt-to-phys offset:** 0x3F000000 (virt 0x80300000 = phys 0x41300000)
+- **WiFi radios:** wifi0 (2.4GHz IPQ5018), wifi1 (5GHz QCN9000 PCIe), wifi2 (6GHz QCN9000 PCIe)
+- **umac module base:** 0x7F9F8000 (virtual)
+- **Target function:** `wlan_cfr_is_feature_disabled` at 0x7FB14BA8 (virtual, in umac)
+
+## Files
+
+- `kpatch.c` - First attempt at /dev/kmem patcher
+- `kpatch2.c` - Improved patcher with mmap fallback
+- `cfr_patch.c` - Page table walking patcher (couldn't find swapper_pg_dir)
+- `cfr_enable.c` - Kernel module source (needs matching headers to compile)
