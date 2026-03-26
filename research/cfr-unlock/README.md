@@ -255,3 +255,39 @@ CFR/CIR report queue full      - CFR data queue management
 ```
 
 The firmware has full CFR code. The only thing missing is the service advertisement at boot.
+
+## v7: Service Bitmap Injection (CURRENT APPROACH)
+
+### Key Insight
+The DBR ring allocation is controlled by the **HOST**, not the firmware. The sequence is:
+1. Firmware sends WMI_SERVICE_READY (without CFR bit)
+2. Host saves the service bitmap
+3. Host sends WMI_INIT_CMD requesting resources for supported services
+4. **Firmware allocates resources based on HOST's request**
+
+If we inject CFR support into the saved bitmap BEFORE WMI_INIT_CMD is sent,
+the firmware should allocate a CFR DBR ring because the host requested it.
+
+### v7 Module
+- Patches `wlan_cfr_is_feature_disabled` -> return 0
+- Patches `init_deinit_cfr_support_enable` -> force `target_if_cfr_set_cfr_support(psoc, 1)`
+- Both patches verified working
+
+### Remaining Issue
+Need to properly restart the wifi stack with patches active. Ubiquiti's `wifi` script
+uses UCI which isn't configured on their platform. Need to find their internal
+radio restart mechanism (possibly `mca-cli-op` or module unload/reload).
+
+### Firmware Analysis
+- `amss.bin` is ELF 32-bit ARM, 3.9MB
+- Contains CFR code: wlan_cfr.c, whal_cfir.c, phyCfrCirCap.c, wal_cfir.c
+- `IMAGE_VARIANT_STRING=9000.wlanfw.eval_v1Q` - evaluation firmware
+- `phyCfrCirCap.c` has "Enable CFR ini programming" - firmware reads an INI param for CFR
+- `CFR_UNIT_TEST_CMD` interface exists in firmware for testing CFR
+- Firmware sends WMI_SERVICE_READY with capabilities to host
+- Host decides what to request in WMI_INIT_CMD
+
+### Next Steps
+1. Find proper wifi restart on Ubiquiti platform (reboot AP with module in init)
+2. Or: patch `save_service_bitmap_tlv` to inject bit 142 into bitmap
+3. Test if firmware honors CFR ring request when CFR wasn't originally advertised
