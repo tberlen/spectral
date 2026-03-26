@@ -323,7 +323,7 @@ async function runBaselineAll(duration) {
     for (const apBtn of apBtns) {
         const apId = apBtn.id.replace('ap-baseline-', '');
         apBtn.disabled = true;
-        apBtn.textContent = '0/' + (duration * 2);
+        apBtn.textContent = `${Math.floor(duration/60)}:00`;
 
         fetch(`/api/aps/${apId}/baseline`, {
             method: 'POST',
@@ -332,23 +332,27 @@ async function runBaselineAll(duration) {
         });
     }
 
-    // Poll until all done
-    const poll = setInterval(async () => {
+    // Poll until all done - show time remaining
+    const pollBaseline = setInterval(async () => {
         let allDone = true;
         for (const apBtn of apBtns) {
             const apId = apBtn.id.replace('ap-baseline-', '');
             const resp = await fetch(`/api/aps/${apId}/baseline`);
             const data = await resp.json();
             if (data.status === 'capturing') {
-                apBtn.textContent = `${data.samples}/${data.target}`;
+                const rem = data.remaining || 0;
+                const m = Math.floor(rem / 60);
+                const s = rem % 60;
+                apBtn.textContent = `${m}:${s.toString().padStart(2, '0')}`;
                 allDone = false;
             } else if (data.status === 'locked') {
-                apBtn.textContent = 'Baseline';
+                apBtn.textContent = `Done (${data.samples})`;
                 apBtn.disabled = false;
+                setTimeout(() => { apBtn.textContent = 'Baseline'; }, 3000);
             }
         }
         if (allDone) {
-            clearInterval(poll);
+            clearInterval(pollBaseline);
             btn.textContent = 'Baseline All';
             btn.disabled = false;
         }

@@ -444,7 +444,8 @@ class Dashboard:
 
     async def api_start_baseline(self, request):
         ap_id = int(request.match_info['id'])
-        data, status = await self._proxy_to_collector('POST', f'/baseline/{ap_id}')
+        body = await request.json() if request.can_read_body else {}
+        data, status = await self._proxy_to_collector('POST', f'/baseline/{ap_id}', body)
         return web.json_response(data, status=status)
 
     async def api_get_baseline(self, request):

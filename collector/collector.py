@@ -65,10 +65,9 @@ class OccupancyDetector:
         return self.sensitivity.get(office_id, 1.0)
 
     def start_baseline(self, ap_id, duration_seconds=60):
-        """Start capturing baseline for an AP. Resets existing baseline."""
-        # ~100 samples/sec from spectral, so duration_seconds * 100 samples
-        # But we cap per-radio at a reasonable number
-        target = max(60, duration_seconds * 2)  # ~2 samples/sec after processing
+        """Start capturing baseline for an AP. Resets existing baseline.
+        Uses time-based capture - collects for duration_seconds regardless of sample count."""
+        end_time = time.time() + duration_seconds
         for radio in list(self.state[ap_id].keys()):
             s = self.state[ap_id][radio]
             s['baseline_energy'] = 0.0
@@ -76,20 +75,29 @@ class OccupancyDetector:
             s['baseline_locked'] = False
             s['baseline_samples'] = 0
             s['baseline_time'] = None
-        self.capturing_baseline[ap_id] = {'target': target, 'start_time': time.time()}
+        self.capturing_baseline[ap_id] = {
+            'end_time': end_time,
+            'duration': duration_seconds,
+            'start_time': time.time()
+        }
 
     def get_baseline_status(self, ap_id):
         """Get baseline capture status for an AP."""
         if ap_id in self.capturing_baseline:
             info = self.capturing_baseline[ap_id]
+            now = time.time()
+            elapsed = int(now - info['start_time'])
+            remaining = max(0, int(info['end_time'] - now))
+            duration = info['duration']
             for radio, s in self.state[ap_id].items():
                 return {
                     'status': 'capturing',
                     'samples': s['baseline_samples'],
-                    'target': info['target'],
-                    'elapsed': int(time.time() - info['start_time']),
+                    'elapsed': elapsed,
+                    'remaining': remaining,
+                    'duration': duration,
                 }
-            return {'status': 'capturing', 'samples': 0, 'target': info['target']}
+            return {'status': 'capturing', 'samples': 0, 'elapsed': elapsed, 'remaining': remaining, 'duration': duration}
 
         for radio, s in self.state[ap_id].items():
             if s['baseline_locked']:
@@ -116,15 +124,14 @@ class OccupancyDetector:
         s['recent_energy'].append((now, energy, nonzero))
         s['recent_energy'] = [(t, e, n) for t, e, n in s['recent_energy'] if now - t < 30]
 
-        # Baseline capture mode
+        # Baseline capture mode (time-based)
         if ap_id in self.capturing_baseline and not s['baseline_locked']:
-            target = self.capturing_baseline[ap_id]['target']
             count = s['baseline_samples']
             s['baseline_energy'] = (s['baseline_energy'] * count + energy) / (count + 1)
             s['baseline_nonzero'] = (s['baseline_nonzero'] * count + nonzero) / (count + 1)
             s['baseline_samples'] = count + 1
 
-            if s['baseline_samples'] >= target:
+            if now >= self.capturing_baseline[ap_id]['end_time']:
                 s['baseline_locked'] = True
                 s['baseline_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
                 all_done = all(
