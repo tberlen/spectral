@@ -225,7 +225,7 @@ function updateHeartbeat(collector, apData) {
 
 function updateOfficeStatus(apData) {
     const el = document.getElementById('office-status');
-    const anyOccupied = apData.some(ap => (ap.intensity || 0) > 0.15);
+    const anyOccupied = apData.some(ap => (ap.intensity || 0) >= 0.15);
 
     if (apData.length === 0) {
         el.textContent = 'No APs';

@@ -274,16 +274,19 @@ class Dashboard:
             ap_count = len(office_aps)
             active_count = 0
             total_intensity = 0
+            max_intensity = 0
 
             for ap in office_aps:
                 ip = str(ap['ip_address'])
                 ap_data = per_ap.get(ip)
                 if ap_data and ap_data.get('registered'):
                     active_count += 1
-                    total_intensity += ap_data.get('intensity', 0)
+                    ap_intensity = ap_data.get('intensity', 0)
+                    total_intensity += ap_intensity
+                    max_intensity = max(max_intensity, ap_intensity)
 
             avg_intensity = total_intensity / active_count if active_count > 0 else 0
-            occupied = avg_intensity > 0.15
+            occupied = max_intensity >= 0.15
 
             result.append({
                 'id': office['id'],

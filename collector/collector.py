@@ -45,17 +45,24 @@ class OccupancyDetector:
         # Hysteresis thresholds: must cross upper to become occupied,
         # must drop below lower to become vacant (prevents flickering)
         self.occupy_threshold = 0.15
-        self.vacate_threshold = 0.08
+        self.vacate_threshold = 0.05
+        self.occupy_hold_seconds = 10  # must stay above occupy threshold this long
+        self.vacate_hold_seconds = 30  # must stay below vacate threshold this long
 
         self.state = defaultdict(lambda: defaultdict(lambda: {
             'baseline_energy': 0.0,
             'baseline_nonzero': 0.0,
+            'baseline_energy_std': 0.0,
+            'baseline_nonzero_std': 0.0,
             'baseline_locked': False,
             'baseline_samples': 0,
+            'baseline_raw': [],  # raw samples collected during baseline capture
             'baseline_time': None,
             'recent_energy': [],
             'intensity': 0.0,
             'occupied': False,
+            'occupy_since': None,  # timestamp when intensity first crossed occupy threshold
+            'vacate_since': None,  # timestamp when intensity first dropped below vacate threshold
             'last_update': 0,
         }))
         self.sensitivity = {}  # office_id -> float (0.1 = low, 1.0 = default, 3.0 = high)
@@ -78,8 +85,11 @@ class OccupancyDetector:
             s = self.state[ap_id][radio]
             s['baseline_energy'] = 0.0
             s['baseline_nonzero'] = 0.0
+            s['baseline_energy_std'] = 0.0
+            s['baseline_nonzero_std'] = 0.0
             s['baseline_locked'] = False
             s['baseline_samples'] = 0
+            s['baseline_raw'] = []
             s['baseline_time'] = None
         self.capturing_baseline[ap_id] = {
             'end_time': end_time,
@@ -136,8 +146,16 @@ class OccupancyDetector:
             s['baseline_energy'] = (s['baseline_energy'] * count + energy) / (count + 1)
             s['baseline_nonzero'] = (s['baseline_nonzero'] * count + nonzero) / (count + 1)
             s['baseline_samples'] = count + 1
+            s['baseline_raw'].append((energy, nonzero))
 
             if now >= self.capturing_baseline[ap_id]['end_time']:
+                # Compute noise std from raw samples
+                if s['baseline_raw']:
+                    energies = [e for e, _ in s['baseline_raw']]
+                    nonzeros = [n for _, n in s['baseline_raw']]
+                    s['baseline_energy_std'] = float(np.std(energies))
+                    s['baseline_nonzero_std'] = float(np.std(nonzeros))
+                    s['baseline_raw'] = []  # free memory
                 s['baseline_locked'] = True
                 s['baseline_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
                 all_done = all(
@@ -162,31 +180,66 @@ class OccupancyDetector:
             s['intensity'] = 0.0
             return 0.0
 
+        # Warmup: need enough samples for stable averages after restart
+        # Data arrives fast (~800/s), need a full 30s window to stabilize
+        if s.get('_total_samples', 0) < 500:
+            s['_total_samples'] = s.get('_total_samples', 0) + 1
+            s['intensity'] = 0.0
+            return 0.0
+
         # Compute deviation from baseline
         if s['baseline_energy'] > 0:
-            avg_recent = np.mean([e for _, e, _ in s['recent_energy'][-10:]])
-            deviation = (avg_recent - s['baseline_energy']) / max(s['baseline_energy'], 1)
-            avg_nonzero = np.mean([n for _, _, n in s['recent_energy'][-10:]])
-            nonzero_deviation = (avg_nonzero - s['baseline_nonzero']) / max(s['baseline_nonzero'], 1)
+            window = s['recent_energy']
+            avg_recent = np.mean([e for _, e, _ in window])
+            deviation = abs(avg_recent - s['baseline_energy']) / max(s['baseline_energy'], 1)
+            avg_nonzero = np.mean([n for _, _, n in window])
+            nonzero_deviation = abs(avg_nonzero - s['baseline_nonzero']) / max(s['baseline_nonzero'], 1)
+
+            # Per-radio dead zone: 3 std of the averaged noise
+            # Cap effective window at 100 so dead zone stays meaningful
+            effective_n = min(len(window), 100)
+            if s['baseline_energy_std'] > 0:
+                energy_noise = (3 * s['baseline_energy_std'] / np.sqrt(effective_n)) / max(s['baseline_energy'], 1)
+                nonzero_noise = (3 * s['baseline_nonzero_std'] / np.sqrt(effective_n)) / max(s['baseline_nonzero'], 1)
+            else:
+                # Legacy baselines without std — use conservative fixed dead zone
+                energy_noise = 0.05
+                nonzero_noise = 0.05
+            deviation = max(0.0, deviation - energy_noise)
+            nonzero_deviation = max(0.0, nonzero_deviation - nonzero_noise)
 
             # Apply sensitivity multiplier
             office_id = self.ap_office_map.get(ap_id)
             sens = self.sensitivity.get(office_id, 1.0) if office_id else 1.0
 
-            raw = (deviation * 0.5 + nonzero_deviation * 0.5) * sens
+            raw = (deviation * 0.3 + nonzero_deviation * 0.7) * sens
             intensity = min(1.0, max(0.0, raw))
         else:
             intensity = 0.0
 
-        # Hysteresis: once occupied, stay occupied until intensity drops below vacate threshold
+        # Hysteresis with hold timer: must stay below vacate threshold for N seconds
         if s['occupied']:
             if intensity < self.vacate_threshold:
-                s['occupied'] = False
+                if s['vacate_since'] is None:
+                    s['vacate_since'] = now
+                if now - s['vacate_since'] >= self.vacate_hold_seconds:
+                    s['occupied'] = False
+                    s['vacate_since'] = None
+                else:
+                    intensity = max(intensity, self.occupy_threshold)
             else:
+                s['vacate_since'] = None
                 intensity = max(intensity, self.occupy_threshold)
         else:
             if intensity >= self.occupy_threshold:
-                s['occupied'] = True
+                if s['occupy_since'] is None:
+                    s['occupy_since'] = now
+                if now - s['occupy_since'] >= self.occupy_hold_seconds:
+                    s['occupied'] = True
+                    s['occupy_since'] = None
+                    s['vacate_since'] = None
+            else:
+                s['occupy_since'] = None
 
         s['intensity'] = intensity
         s['last_update'] = now
@@ -198,7 +251,7 @@ class OccupancyDetector:
         radios = self.state[ap_id]
         if not radios:
             return 0.0
-        return np.mean([r['intensity'] for r in radios.values()])
+        return max(r['intensity'] for r in radios.values())
 
 
 class SpectralCollector:
@@ -221,6 +274,7 @@ class SpectralCollector:
 
         await self._load_ap_cache()
         await self._load_baselines()
+        await self._load_sensitivity()
 
         # Start UDP listener
         loop = asyncio.get_event_loop()
@@ -308,12 +362,16 @@ class SpectralCollector:
         return web.json_response(status)
 
     async def _handle_sensitivity(self, request):
-        """Set sensitivity for an office."""
+        """Set sensitivity for an office and persist to DB."""
         from aiohttp import web
         office_id = int(request.match_info['office_id'])
         data = await request.json()
         value = float(data.get('sensitivity', 1.0))
         self.detector.set_sensitivity(office_id, value)
+        await self.db.execute(
+            'UPDATE offices SET sensitivity = $1 WHERE id = $2',
+            self.detector.get_sensitivity(office_id), office_id
+        )
         return web.json_response({'office_id': office_id, 'sensitivity': self.detector.get_sensitivity(office_id)})
 
     async def _handle_get_sensitivity(self, request):
@@ -356,14 +414,24 @@ class SpectralCollector:
             })
         return web.json_response({'time': '02:00', 'duration': 300, 'enabled': False, 'last_run': None})
 
+    async def _load_sensitivity(self):
+        """Load saved sensitivity settings from DB on startup."""
+        rows = await self.db.fetch('SELECT id, sensitivity FROM offices WHERE sensitivity != 1.0')
+        for row in rows:
+            self.detector.set_sensitivity(row['id'], row['sensitivity'])
+        if rows:
+            log.info(f'Loaded sensitivity for {len(rows)} offices: {dict((r["id"], r["sensitivity"]) for r in rows)}')
+
     async def _load_baselines(self):
         """Load saved baselines from DB on startup."""
-        rows = await self.db.fetch('SELECT ap_id, radio, baseline_energy, baseline_nonzero, samples, captured_at FROM baselines')
+        rows = await self.db.fetch('SELECT ap_id, radio, baseline_energy, baseline_nonzero, baseline_energy_std, baseline_nonzero_std, samples, captured_at FROM baselines')
         count = 0
         for row in rows:
             s = self.detector.state[row['ap_id']][row['radio']]
             s['baseline_energy'] = row['baseline_energy']
             s['baseline_nonzero'] = row['baseline_nonzero']
+            s['baseline_energy_std'] = row['baseline_energy_std']
+            s['baseline_nonzero_std'] = row['baseline_nonzero_std']
             s['baseline_samples'] = row['samples']
             s['baseline_locked'] = True
             s['baseline_time'] = row['captured_at'].strftime('%Y-%m-%d %H:%M:%S')
@@ -380,11 +448,11 @@ class SpectralCollector:
                     for radio, s in self.detector.state[ap_id].items():
                         if s['baseline_locked']:
                             await self.db.execute(
-                                '''INSERT INTO baselines (ap_id, radio, baseline_energy, baseline_nonzero, samples)
-                                   VALUES ($1, $2, $3, $4, $5)
+                                '''INSERT INTO baselines (ap_id, radio, baseline_energy, baseline_nonzero, baseline_energy_std, baseline_nonzero_std, samples)
+                                   VALUES ($1, $2, $3, $4, $5, $6, $7)
                                    ON CONFLICT (ap_id, radio) DO UPDATE SET
-                                   baseline_energy = $3, baseline_nonzero = $4, samples = $5, captured_at = NOW()''',
-                                ap_id, radio, s['baseline_energy'], s['baseline_nonzero'], s['baseline_samples']
+                                   baseline_energy = $3, baseline_nonzero = $4, baseline_energy_std = $5, baseline_nonzero_std = $6, samples = $7, captured_at = NOW()''',
+                                ap_id, radio, s['baseline_energy'], s['baseline_nonzero'], s['baseline_energy_std'], s['baseline_nonzero_std'], s['baseline_samples']
                             )
                     log.info(f'Saved baseline for AP {ap_id}')
                 except Exception as e:

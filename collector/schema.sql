@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS offices (
     default_ssh_user TEXT,
     default_ssh_password TEXT,
     timezone TEXT NOT NULL DEFAULT 'America/New_York',
+    sensitivity REAL NOT NULL DEFAULT 1.0,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -99,6 +100,8 @@ CREATE TABLE IF NOT EXISTS baselines (
     radio TEXT NOT NULL,
     baseline_energy DOUBLE PRECISION NOT NULL,
     baseline_nonzero DOUBLE PRECISION NOT NULL,
+    baseline_energy_std DOUBLE PRECISION NOT NULL DEFAULT 0,
+    baseline_nonzero_std DOUBLE PRECISION NOT NULL DEFAULT 0,
     samples INTEGER NOT NULL,
     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(ap_id, radio)

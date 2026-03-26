@@ -1,6 +1,6 @@
 /* Spectral Global Office View */
 
-const POLL_INTERVAL = 10000;
+const POLL_INTERVAL = 5000;
 
 document.addEventListener('DOMContentLoaded', () => {
     setupAddOfficeForm();
