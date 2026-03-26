@@ -358,3 +358,33 @@ Option 4 is immediately actionable with our existing Spectral infrastructure.
 - Only factory config files survive (mgmt, SSH keys, BLE certs)
 - Custom files are removed during boot initialization
 - No overlay filesystem for /etc
+
+## Flash Analysis: Updated Findings
+
+### Write Protection is Per-Partition
+| Partition | RO | Writable |
+|-----------|-----|----------|
+| mmcblk0p1 (HLOS) | 1 | NO |
+| mmcblk0p2 (HLOS_1) | 1 | NO |
+| mmcblk0p3 (bs) | ? | ? |
+| mmcblk0p4 (cfg) | 0 | YES |
+| mmcblk0p5 (log) | 0 | YES |
+
+### cfg Partition (mmcblk0p4)
+- **Writable** from userspace via dd
+- Content is **encrypted/encoded** - not a filesystem
+- Ubiquiti tools decrypt known config keys during boot
+- Files written to /etc/persistent/ are regenerated from cfg blob
+- Custom files added to /etc/persistent/ are NOT stored in cfg
+- Our `test_from_dd` to the raw partition DID persist
+
+### Key Implication
+The cfg partition IS writable and persistent. If we understood Ubiquiti's config
+format, we might be able to inject a boot hook. Or we could write our module
+binary directly to a known offset in the cfg partition and have the boot process
+pick it up - but we'd need to reverse-engineer the config format.
+
+### fwupdate.real
+Uses `ioctl(MEMUNLOCK)` to unlock MTD (NOR flash) partitions, and presumably
+similar eMMC ioctls for HLOS partitions during upgrades. The tool verifies
+RSA+SHA256 signatures before writing.
