@@ -74,6 +74,21 @@
                 </label>
                 <button class="btn btn-sm btn-secondary" onclick="showBaselineModal()">Baseline All</button>
                 <button class="btn btn-sm btn-secondary" onclick="showDiscover()">Discover APs</button>
+                {% set locked_count = aps|selectattr('api_token')|list|length %}
+                {% set total_count = aps|length %}
+                {% if locked_count == total_count and total_count > 0 %}
+                <button class="btn btn-sm btn-secondary" id="lock-all-btn"
+                        onclick="toggleLockAll()"
+                        title="All {{ total_count }} APs locked">
+                    {{ ('&#x1F513; Unlock All')|safe }}
+                </button>
+                {% else %}
+                <button class="btn btn-sm btn-secondary" id="lock-all-btn"
+                        onclick="toggleLockAll()"
+                        title="{{ locked_count }}/{{ total_count }} APs locked">
+                    {{ ('&#x1F512; Lock All (' ~ locked_count ~ '/' ~ total_count ~ ')')|safe }}
+                </button>
+                {% endif %}
                 <button class="btn" onclick="showAddAP()">+ Add AP</button>
             </div>
         </div>
@@ -296,8 +311,20 @@
             try {
                 const resp = await fetch(`/api/aps/${apId}/toggle-lock`, {method: 'POST'});
                 const data = await resp.json();
-                const locked = data.status === 'deployed' && data.steps;
-                // Reload page to get fresh state
+                location.reload();
+            } catch (e) {
+                btn.textContent = 'err';
+                btn.disabled = false;
+            }
+        }
+
+        async function toggleLockAll() {
+            const btn = document.getElementById('lock-all-btn');
+            btn.disabled = true;
+            btn.textContent = '...';
+            try {
+                const resp = await fetch(`/api/offices/${OFFICE_ID}/toggle-lock-all`, {method: 'POST'});
+                const data = await resp.json();
                 location.reload();
             } catch (e) {
                 btn.textContent = 'err';

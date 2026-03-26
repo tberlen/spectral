@@ -68,6 +68,7 @@ class Dashboard:
         self.app.router.add_post('/api/aps/{id}/deploy', self.api_deploy_listener)
         self.app.router.add_post('/api/aps/{id}/check', self.api_check_listener)
         self.app.router.add_post('/api/aps/{id}/toggle-lock', self.api_toggle_ap_lock)
+        self.app.router.add_post('/api/offices/{office_id}/toggle-lock-all', self.api_toggle_lock_all)
         self.app.router.add_post('/api/discover', self.api_discover)
 
         # API - Baseline & Sensitivity
@@ -446,6 +447,37 @@ class Dashboard:
             {'with_token': with_token}
         )
         return web.json_response(data, status=status)
+
+    async def api_toggle_lock_all(self, request):
+        """Lock or unlock all APs in an office. If any are unlocked, locks all. If all locked, unlocks all."""
+        office_id = int(request.match_info['office_id'])
+        aps = await self.db.fetch(
+            'SELECT id, api_token FROM access_points WHERE office_id = $1', office_id
+        )
+        if not aps:
+            raise web.HTTPNotFound(text='No APs found')
+
+        locked_count = sum(1 for ap in aps if ap['api_token'])
+        # If any unlocked, lock all. If all locked, unlock all.
+        with_token = locked_count < len(aps)
+
+        results = {}
+        for ap in aps:
+            # Skip if already in desired state
+            has_token = bool(ap['api_token'])
+            if has_token == with_token:
+                results[str(ap['id'])] = {'status': 'unchanged'}
+                continue
+            data, status = await self._proxy_to_manager(
+                'POST', f'/api/aps/{ap["id"]}/deploy',
+                {'with_token': with_token}
+            )
+            results[str(ap['id'])] = data
+
+        return web.json_response({
+            'action': 'locked' if with_token else 'unlocked',
+            'results': results
+        })
 
     async def _proxy_to_collector(self, method, path, data=None):
         """Proxy a request to the collector service."""
