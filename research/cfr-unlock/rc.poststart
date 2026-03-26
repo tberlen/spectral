@@ -1,0 +1,11 @@
+#!/bin/sh
+# CFR Enable Module - loads before wifi init
+# Place in /etc/persistent/rc.poststart on UniFi AP
+# Also place cfr_enable.ko in /etc/persistent/
+if [ -f /etc/persistent/cfr_enable.ko ]; then
+    cp /etc/persistent/cfr_enable.ko /lib/modules/5.4.164/cfr_enable.ko 2>/dev/null
+    if ! grep -q cfr_enable /lib/wifi/qca-wifi-modules; then
+        sed -i "s/^qca_ol$/cfr_enable\nqca_ol/" /lib/wifi/qca-wifi-modules
+    fi
+    echo "$(date) CFR module ready for wifi init" > /tmp/cfr_boot.log
+fi
