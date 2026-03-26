@@ -424,3 +424,29 @@ valid modified firmware image.
 2. Raw disk writes to cfg/log partitions
 3. BLKROSET to temporarily unlock disk-level write protection
 4. Everything in the Spectral project for spectral-based occupancy
+
+## cfgmtd Analysis
+
+### How Persistent Storage Works
+- `/sbin/cfgmtd` reads/writes the cfg partition (`mmcblk0p4`)
+- Format is a custom compressed archive (NOT a filesystem)
+- Only stores known file types: cfg/mgmt, SSH keys, BLE certs
+- Custom files (like our .ko) are NOT persisted by cfgmtd
+- cfgmtd -w only archives files it recognizes from /etc/persistent/
+
+### Boot Sequence (preinit)
+1. `10_mmcblk` - creates block device nodes
+2. `prepare_filesystem` - sets up /var/etc/persistent/cfg
+3. `load_ubnthal` - loads Ubiquiti HAL
+4. `load_gpiodev` - GPIO/LED setup
+5. `do_ubntconf` - **reads cfg partition via cfgmtd, creates /etc/persistent/ files**
+6. `99_30_ubnt_qca_wifi_modules` - removes qca-wifi from autoload
+7. System init scripts run (S01-S99)
+8. inittab: mcad, hostapd, etc. start (loads wifi modules)
+
+### Dead Ends Confirmed
+- cfgmtd only persists known file types
+- /etc/persistent/ files come from cfgmtd, not directly from partition
+- No way to inject arbitrary files into the boot sequence via persistent storage
+- HLOS FIT image is RSA2048 signed (kernel + rootfs + DTBs)
+- eMMC HLOS partition physically writable (via BLKROSET) but modifications break signature
