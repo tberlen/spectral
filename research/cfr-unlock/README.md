@@ -388,3 +388,39 @@ pick it up - but we'd need to reverse-engineer the config format.
 Uses `ioctl(MEMUNLOCK)` to unlock MTD (NOR flash) partitions, and presumably
 similar eMMC ioctls for HLOS partitions during upgrades. The tool verifies
 RSA+SHA256 signatures before writing.
+
+## HLOS Flash Analysis: Complete
+
+### We CAN Write to Flash
+- `BLKROSET` ioctl on `/dev/mmcblk0` successfully clears disk-level read-only
+- Writing via raw disk at partition offset works (bypasses per-partition RO)
+- Partition p4 (cfg) and p5 (log) are natively writable
+
+### But FIT Image is RSA Signed
+Every component in the HLOS FIT image is signed:
+
+```
+Algorithm: sha256,rsa2048
+Key: uap_ipq50xx (Ubiquiti's private key)
+Signed components:
+  - kernel@1 (includes embedded initramfs/squashfs rootfs)
+  - fdt@u6-iw, fdt@u6-pro, fdt@u6-enterprise-iw, etc.
+  - All configuration nodes
+```
+
+### Rootfs Location
+- Rootfs is an **initramfs embedded inside the kernel image**
+- No separate rootfs partition or FIT node
+- The squashfs is inside the kernel@1 data blob
+- Therefore rootfs IS covered by the kernel signature
+
+### Conclusion
+Modifying any component (kernel, rootfs, DTB) breaks the RSA2048 signature.
+Without Ubiquiti's private signing key (`uap_ipq50xx`), we cannot create a
+valid modified firmware image.
+
+### What Still Works
+1. Post-boot kernel module loading via SSH (no persistence)
+2. Raw disk writes to cfg/log partitions
+3. BLKROSET to temporarily unlock disk-level write protection
+4. Everything in the Spectral project for spectral-based occupancy
