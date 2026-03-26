@@ -88,7 +88,7 @@ sshpass -p '<password>' ssh <user>@<ap-ip> \
 - **Home GitLab:** http://REDACTED_INTERNAL_IP
   - Username: root
   - API Token: REDACTED_GITLAB_TOKEN
-  - Repo: http://REDACTED_INTERNAL_IP/root/c-you
+  - Repo: http://REDACTED_INTERNAL_IP/root/spectral
   - Branch: main
 - **Work GitLab:** gitlab.iqt.org (push here when ready for production)
 

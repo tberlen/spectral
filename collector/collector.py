@@ -42,6 +42,11 @@ class OccupancyDetector:
 
     def __init__(self):
         # Per-AP state: {ap_id: {radio: {...}}}
+        # Hysteresis thresholds: must cross upper to become occupied,
+        # must drop below lower to become vacant (prevents flickering)
+        self.occupy_threshold = 0.15
+        self.vacate_threshold = 0.08
+
         self.state = defaultdict(lambda: defaultdict(lambda: {
             'baseline_energy': 0.0,
             'baseline_nonzero': 0.0,
@@ -50,6 +55,7 @@ class OccupancyDetector:
             'baseline_time': None,
             'recent_energy': [],
             'intensity': 0.0,
+            'occupied': False,
             'last_update': 0,
         }))
         self.sensitivity = {}  # office_id -> float (0.1 = low, 1.0 = default, 3.0 = high)
@@ -171,6 +177,16 @@ class OccupancyDetector:
             intensity = min(1.0, max(0.0, raw))
         else:
             intensity = 0.0
+
+        # Hysteresis: once occupied, stay occupied until intensity drops below vacate threshold
+        if s['occupied']:
+            if intensity < self.vacate_threshold:
+                s['occupied'] = False
+            else:
+                intensity = max(intensity, self.occupy_threshold)
+        else:
+            if intensity >= self.occupy_threshold:
+                s['occupied'] = True
 
         s['intensity'] = intensity
         s['last_update'] = now
