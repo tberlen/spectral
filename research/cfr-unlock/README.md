@@ -291,3 +291,38 @@ radio restart mechanism (possibly `mca-cli-op` or module unload/reload).
 1. Find proper wifi restart on Ubiquiti platform (reboot AP with module in init)
 2. Or: patch `save_service_bitmap_tlv` to inject bit 142 into bitmap
 3. Test if firmware honors CFR ring request when CFR wasn't originally advertised
+
+## Reboot Test Results
+
+### What We Tried
+1. Placed `cfr_enable.ko` and `rc.poststart` in `/etc/persistent/`
+2. Modified `/etc/rc.local` and `/lib/wifi/qca-wifi-modules` in RAM
+3. Rebooted AP
+
+### What Happened
+- `/etc/persistent/` was CLEANED on reboot - only factory files survived
+- Ubiquiti actively removes non-standard files from persistent storage
+- All RAM filesystem changes reverted to factory state
+- The module and boot scripts were lost
+
+### Ubiquiti's Lockdown
+1. Rootfs is regenerated from firmware image on each boot
+2. `/etc/persistent/` is cleaned to only keep known config files (cfg/mgmt, SSH keys, BLE certs)
+3. No writable overlay filesystem
+4. No persistent hooks into boot sequence
+
+### What DOES Work
+- **Building kernel modules** that load on UniFi APs (vermagic matched)
+- **Patching kernel functions** at runtime (kallsyms + set_memory_rw)
+- **cfr_timer command** works after patching wlan_cfr_is_feature_disabled
+- Module can be re-deployed via SSH after each boot
+
+### Remaining Path: Pre-Init Module Loading
+The module MUST be loaded between `umac` and `qca_ol` in the boot sequence.
+Options:
+1. Find a Ubiquiti-sanctioned persistent hook (maybe via controller provisioning)
+2. Patch the firmware image itself (on flash, not RAM)
+3. Run a cron job or external service that re-deploys and loads the module after each boot
+4. Use the AP Manager's auto-remediation to push the module after reboot detection
+
+Option 4 is immediately actionable with our existing Spectral infrastructure.
