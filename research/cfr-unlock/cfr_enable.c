@@ -1,9 +1,11 @@
 /*
- * cfr_enable.ko v5 - Full CFR unlock for UniFi APs
+ * cfr_enable.ko v6 - Full CFR unlock with init intercept
  * 
- * 1. Patches wlan_cfr_is_feature_disabled() to return 0
- * 2. Calls tgt_cfr_support_set() to mark CFR as supported  
- * 3. Calls cfr_initialize_pdev() to init the CFR subsystem
+ * Patches TWO functions:
+ * 1. wlan_cfr_is_feature_disabled -> returns 0 (not disabled)
+ * 2. init_deinit_cfr_support_enable -> forces CFR support on
+ *
+ * After loading, run "wifi down && wifi up" to reinit with CFR enabled.
  */
 
 #include <linux/module.h>
@@ -12,13 +14,44 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Spectral Project");
-MODULE_DESCRIPTION("Full CFR unlock for UniFi APs");
+MODULE_DESCRIPTION("Full CFR unlock for UniFi APs v6");
 
-static unsigned long func_addr = 0;
-static unsigned int original_insn[2] = {0, 0};
-static int patched = 0;
+struct patch_info {
+    unsigned long addr;
+    unsigned int original[2];
+    int patched;
+    const char *name;
+};
 
+static struct patch_info patches[2] = {
+    { .name = "wlan_cfr_is_feature_disabled" },
+    { .name = "init_deinit_cfr_support_enable" },
+};
+static int num_patches = 0;
+
+/* ARM: mov r0, #0; bx lr */
 static const unsigned int ret_zero[2] = { 0xE3A00000, 0xE12FFF1E };
+
+/* ARM: mov r0, #1; bx lr (for init_deinit - force enable) */
+/* Actually init_deinit_cfr_support_enable doesn't return a value - 
+ * it reads the service bit and calls target_if_cfr_set_cfr_support().
+ * We need to replace it with a version that always calls set_cfr_support(psoc, 1).
+ * 
+ * Simplest approach: make it a no-op (return immediately) and instead
+ * patch wmi_service_enabled to return true for the CFR service check.
+ *
+ * OR: patch init_deinit_cfr_support_enable to just do:
+ *   push {lr}
+ *   mov r1, #1           @ is_cfr_support = 1  
+ *   bl target_if_cfr_set_cfr_support
+ *   pop {pc}
+ *
+ * But we don't know the relative offset for bl. 
+ * Simpler: just make it always call set_cfr_support with arg=1.
+ * The function takes (psoc) and we need to call set_cfr_support(psoc, 1).
+ * r0 already has psoc when this function is called.
+ * So: mov r1, #1; b target_if_cfr_set_cfr_support
+ */
 
 static int (*fn_set_memory_rw)(unsigned long addr, int numpages);
 static int (*fn_set_memory_ro)(unsigned long addr, int numpages);
@@ -35,24 +68,47 @@ static void do_cache_flush(unsigned long addr)
     );
 }
 
-static void patch_function(unsigned long addr)
+static int apply_patch(struct patch_info *p, const unsigned int *insn)
 {
-    unsigned int *p = (unsigned int *)addr;
-    unsigned long page = addr & PAGE_MASK;
+    unsigned int *code = (unsigned int *)p->addr;
+    unsigned long page = p->addr & PAGE_MASK;
+    
+    p->original[0] = code[0];
+    p->original[1] = code[1];
+    
+    pr_info("cfr_enable: %s @ 0x%lx: 0x%08x 0x%08x -> 0x%08x 0x%08x\n",
+            p->name, p->addr, p->original[0], p->original[1], insn[0], insn[1]);
     
     fn_set_memory_rw(page, 1);
-    p[0] = ret_zero[0];
-    p[1] = ret_zero[1];
-    do_cache_flush(addr);
-    do_cache_flush(addr + 4);
+    code[0] = insn[0];
+    code[1] = insn[1];
+    do_cache_flush(p->addr);
+    do_cache_flush(p->addr + 4);
     fn_set_memory_ro(page, 1);
+    
+    p->patched = (code[0] == insn[0] && code[1] == insn[1]);
+    return p->patched ? 0 : -EIO;
+}
+
+static void restore_patch(struct patch_info *p)
+{
+    if (p->patched && p->addr) {
+        unsigned int *code = (unsigned int *)p->addr;
+        unsigned long page = p->addr & PAGE_MASK;
+        fn_set_memory_rw(page, 1);
+        code[0] = p->original[0];
+        code[1] = p->original[1];
+        do_cache_flush(p->addr);
+        do_cache_flush(p->addr + 4);
+        fn_set_memory_ro(page, 1);
+        pr_info("cfr_enable: restored %s\n", p->name);
+    }
 }
 
 static int __init cfr_enable_init(void)
 {
-    unsigned int *p;
+    unsigned long set_cfr_support_addr;
     
-    /* Resolve memory functions */
     fn_set_memory_rw = (void *)kallsyms_lookup_name("set_memory_rw");
     fn_set_memory_ro = (void *)kallsyms_lookup_name("set_memory_ro");
     if (!fn_set_memory_rw || !fn_set_memory_ro) {
@@ -60,98 +116,58 @@ static int __init cfr_enable_init(void)
         return -ENOENT;
     }
 
-    /* Patch wlan_cfr_is_feature_disabled */
-    func_addr = kallsyms_lookup_name("wlan_cfr_is_feature_disabled");
-    if (!func_addr) {
-        pr_err("cfr_enable: target not found\n");
+    /* Patch 1: wlan_cfr_is_feature_disabled -> return 0 */
+    patches[0].addr = kallsyms_lookup_name("wlan_cfr_is_feature_disabled");
+    if (!patches[0].addr) {
+        pr_err("cfr_enable: wlan_cfr_is_feature_disabled not found\n");
         return -ENOENT;
     }
-    
-    p = (unsigned int *)func_addr;
-    original_insn[0] = p[0];
-    original_insn[1] = p[1];
-    pr_info("cfr_enable: patching %lx (was 0x%08x 0x%08x)\n", 
-            func_addr, original_insn[0], original_insn[1]);
-    
-    patch_function(func_addr);
-    patched = 1;
-    pr_info("cfr_enable: wlan_cfr_is_feature_disabled patched\n");
+    if (apply_patch(&patches[0], ret_zero)) {
+        pr_err("cfr_enable: patch 1 failed\n");
+        return -EIO;
+    }
+    num_patches = 1;
 
-    /* Now try to initialize CFR for each pdev (radio) */
-    {
-        typedef void* (*get_pdev_fn)(void *psoc, uint8_t id, unsigned int dbg_id);
-        typedef int (*cfr_init_fn)(void *pdev);
-        typedef void (*cfr_support_fn)(void *psoc, uint8_t is_cfr_support);
+    /* Patch 2: init_deinit_cfr_support_enable -> force call set_cfr_support(psoc, 1) */
+    patches[1].addr = kallsyms_lookup_name("init_deinit_cfr_support_enable");
+    set_cfr_support_addr = kallsyms_lookup_name("target_if_cfr_set_cfr_support");
+    
+    if (patches[1].addr && set_cfr_support_addr) {
+        /* Build: mov r1, #1; b target_if_cfr_set_cfr_support
+         * The branch offset = (target - (pc+8)) / 4
+         * pc = patches[1].addr + 4 (second instruction)
+         * ARM branch: 0xEA000000 | (offset & 0x00FFFFFF)
+         */
+        long offset = ((long)set_cfr_support_addr - (long)(patches[1].addr + 4 + 8)) / 4;
+        unsigned int branch_insn = 0xEA000000 | (offset & 0x00FFFFFF);
+        unsigned int init_patch[2] = { 0xE3A01001, branch_insn }; /* mov r1, #1; b target */
         
-        get_pdev_fn get_pdev = (void *)kallsyms_lookup_name("wlan_objmgr_get_pdev_by_id");
-        cfr_init_fn cfr_init = (void *)kallsyms_lookup_name("cfr_initialize_pdev");
-        cfr_support_fn support_set = (void *)kallsyms_lookup_name("tgt_cfr_support_set");
-        unsigned long pdev_open = kallsyms_lookup_name("wlan_cfr_pdev_open");
+        pr_info("cfr_enable: set_cfr_support @ 0x%lx, branch offset %ld (0x%08x)\n",
+                set_cfr_support_addr, offset, branch_insn);
         
-        pr_info("cfr_enable: get_pdev=%px cfr_init=%px support_set=%px pdev_open=%px\n",
-                get_pdev, cfr_init, support_set, pdev_open);
-
-        /* We need a psoc pointer. Try to find it. */
-        {
-            /* wlan_objmgr_get_psoc_by_id(0) should give us the global psoc */
-            typedef void* (*get_psoc_fn)(uint8_t id);
-            get_psoc_fn get_psoc = (void *)kallsyms_lookup_name("wlan_objmgr_get_psoc_by_id");
-            
-            if (get_psoc) {
-                void *psoc;
-                int i;
-                
-                /* Try psoc IDs 0, 1, 2 (one per SoC/radio chip) */
-                for (i = 0; i < 3; i++) {
-                    psoc = get_psoc(i);
-                    if (!psoc) {
-                        pr_info("cfr_enable: psoc[%d] = NULL\n", i);
-                        continue;
-                    }
-                    pr_info("cfr_enable: psoc[%d] = %px\n", i, psoc);
-                    
-                    /* Mark CFR as supported */
-                    if (support_set) {
-                        support_set(psoc, 1);
-                        pr_info("cfr_enable: CFR support set for psoc[%d]\n", i);
-                    }
-                    
-                    /* Get pdev and init CFR */
-                    if (get_pdev && cfr_init) {
-                        /* dbg_id 0 = WLAN_OSIF_ID */
-                        void *pdev = get_pdev(psoc, 0, 0);
-                        if (pdev) {
-                            int ret = cfr_init(pdev);
-                            pr_info("cfr_enable: cfr_initialize_pdev(psoc[%d]) = %d\n", i, ret);
-                        } else {
-                            pr_info("cfr_enable: no pdev for psoc[%d]\n", i);
-                        }
-                    }
-                }
-            } else {
-                pr_warn("cfr_enable: get_psoc not found - CFR init skipped\n");
-                pr_warn("cfr_enable: try: ifconfig wifi1ap3 down && ifconfig wifi1ap3 up\n");
-            }
+        if (apply_patch(&patches[1], init_patch)) {
+            pr_err("cfr_enable: patch 2 failed\n");
+        } else {
+            num_patches = 2;
         }
+    } else {
+        pr_warn("cfr_enable: init_deinit_cfr_support_enable or target not found\n");
     }
 
-    pr_info("cfr_enable: done. Try: cfg80211tool wifi1 cfr_timer 1\n");
+    pr_info("cfr_enable: %d patches applied\n", num_patches);
+    pr_info("cfr_enable: NOW RUN: wifi down && sleep 3 && wifi up\n");
+    pr_info("cfr_enable: Then:    cfg80211tool wifi1 cfr_timer 1\n");
+    pr_info("cfr_enable:          cfr_test_app -i wifi1\n");
+    
     return 0;
 }
 
 static void __exit cfr_enable_exit(void)
 {
-    if (patched && func_addr) {
-        unsigned int *p = (unsigned int *)func_addr;
-        unsigned long page = func_addr & PAGE_MASK;
-        fn_set_memory_rw(page, 1);
-        p[0] = original_insn[0];
-        p[1] = original_insn[1];
-        do_cache_flush(func_addr);
-        do_cache_flush(func_addr + 4);
-        fn_set_memory_ro(page, 1);
-        pr_info("cfr_enable: restored\n");
-    }
+    int i;
+    for (i = num_patches - 1; i >= 0; i--)
+        restore_patch(&patches[i]);
+    pr_info("cfr_enable: all patches restored\n");
 }
 
 module_init(cfr_enable_init);

@@ -216,3 +216,42 @@ make -C /path/to/linux-5.4.164 M=$(pwd) ARCH=arm CROSS_COMPILE=arm-linux-gnueabi
 base64 cfr_enable.ko | ssh user@ap 'base64 -d > /tmp/cfr_enable.ko'
 ssh user@ap 'insmod /tmp/cfr_enable.ko'
 ```
+
+## v6: Init Intercept Approach
+
+### What v6 Does
+Patches TWO functions:
+1. `wlan_cfr_is_feature_disabled` -> returns 0 (bypasses feature check)
+2. `init_deinit_cfr_support_enable` -> calls `target_if_cfr_set_cfr_support(psoc, 1)` directly
+
+The second patch builds an ARM branch instruction at runtime:
+```
+mov r1, #1                          @ CFR support = true
+b   target_if_cfr_set_cfr_support   @ tail call
+```
+
+### Result
+Both patches apply successfully. However, `wifi down && wifi up` doesn't properly restart the radio firmware on Ubiquiti's platform (their `wifi` script relies on `uci` which isn't configured).
+
+### The DBR Ring Problem (Deeper Understanding)
+The firmware on the QCN9000 PCIe radio chip runs independently. Host driver restart doesn't restart the radio firmware. The DBR (Direct Buffer Ring) is a DMA ring allocated by the firmware during its boot, based on what services it plans to offer. Since the firmware doesn't advertise CFR:
+- No DBR ring is allocated for CFR data
+- The host-side `cfr_enh_init_pdev` tries to register a DBR consumer for CFR
+- Registration fails because no ring exists: `target_if_dbr_init_ring: srng setup failed`
+
+### Next Steps to Try
+1. **Full PCIe device reset** - reset the QCN9000 via PCIe, force firmware reload with patches active
+2. **Modify amss.bin** - find the service bitmap in the firmware binary, flip the CFR bit, then reboot
+3. **WMI command injection** - send a raw WMI command to the firmware requesting CFR DBR ring allocation
+4. **fw_ini_cfg.bin modification** - the firmware reads this JSON config; maybe a DBR ring count parameter exists
+
+### Key Firmware Strings Found
+```
+wlan_cfr.c                    - CFR source file compiled into firmware
+whal_cfir_configure: rtt %d capture_cfr %d capture_cir %d  - CFR configure function
+whal_cfir_enable: enaRttPerBurst %d ...  - CFR enable function
+wal_cfir_resolve: pdev %d cfg 0x%08x ...  - CFR resolution
+CFR/CIR report queue full      - CFR data queue management
+```
+
+The firmware has full CFR code. The only thing missing is the service advertisement at boot.
