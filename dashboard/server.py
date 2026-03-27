@@ -69,6 +69,7 @@ class Dashboard:
         self.app.router.add_post('/api/aps/{id}/check', self.api_check_listener)
         self.app.router.add_post('/api/aps/{id}/toggle-lock', self.api_toggle_ap_lock)
         self.app.router.add_post('/api/offices/{office_id}/toggle-lock-all', self.api_toggle_lock_all)
+        self.app.router.add_post('/api/offices/{office_id}/deploy', self.api_deploy_office)
         self.app.router.add_post('/api/discover', self.api_discover)
 
         # API - Baseline & Sensitivity
@@ -478,6 +479,20 @@ class Dashboard:
             'action': 'locked' if with_token else 'unlocked',
             'results': results
         })
+
+    async def api_deploy_office(self, request):
+        """Deploy listeners to all APs in an office."""
+        office_id = int(request.match_info['office_id'])
+        manager_url = os.environ.get('AP_MANAGER_URL', 'http://ap-manager:8081')
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=600)
+            ) as session:
+                async with session.post(f'{manager_url}/api/offices/{office_id}/deploy', json={}) as resp:
+                    data = await resp.json()
+                    return web.json_response(data, status=resp.status)
+        except Exception as e:
+            return web.json_response({'status': 'error', 'details': str(e)}, status=503)
 
     async def _proxy_to_collector(self, method, path, data=None):
         """Proxy a request to the collector service."""

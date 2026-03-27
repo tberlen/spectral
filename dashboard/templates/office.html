@@ -72,6 +72,7 @@
                            oninput="setSensitivity(this.value / 10)">
                     <span id="sensitivity-val">1.0x</span>
                 </label>
+                <button class="btn btn-sm" onclick="installAll()">Install All</button>
                 <button class="btn btn-sm btn-secondary" onclick="showBaselineModal()">Baseline All</button>
                 <button class="btn btn-sm btn-secondary" onclick="showDiscover()">Discover APs</button>
                 {% set locked_count = aps|selectattr('api_token')|list|length %}
@@ -314,6 +315,21 @@
                 location.reload();
             } catch (e) {
                 btn.textContent = 'err';
+                btn.disabled = false;
+            }
+        }
+
+        async function installAll() {
+            if (!confirm('Deploy listeners to all APs in this office?')) return;
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = 'Deploying...';
+            try {
+                const resp = await fetch(`/api/offices/${OFFICE_ID}/deploy`, {method: 'POST'});
+                const data = await resp.json();
+                location.reload();
+            } catch (e) {
+                btn.textContent = 'Error';
                 btn.disabled = false;
             }
         }

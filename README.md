@@ -114,7 +114,7 @@ All UniFi APs with Qualcomm radios (`qca_spectral` + `qca_ol` kernel modules) sh
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │  UniFi APs   │     │  UniFi APs   │     │  UniFi APs   │
-│  Cambridge   │     │  Singapore   │     │  Office N    │
+│   Office 1   │     │   Office 2   │     │  Office N    │
 └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
        │ UDP                │ UDP                │ UDP
        │ (spectral)         │ (spectral)         │ (spectral)
