@@ -250,21 +250,84 @@
                 <label>Location <input type="text" name="location" value="{{ office.location or '' }}"></label>
                 <label>Timezone
                     <select name="timezone" id="office-timezone" style="display:block; width:100%; margin-top:0.25rem; padding:0.5rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text);">
-                        <option value="America/New_York">Eastern (New York)</option>
-                        <option value="America/Chicago">Central (Chicago)</option>
-                        <option value="America/Denver">Mountain (Denver)</option>
-                        <option value="America/Los_Angeles">Pacific (Los Angeles)</option>
-                        <option value="America/Anchorage">Alaska</option>
-                        <option value="Pacific/Honolulu">Hawaii</option>
-                        <option value="Europe/London">UK (London)</option>
-                        <option value="Europe/Paris">Central Europe (Paris)</option>
-                        <option value="Europe/Berlin">Central Europe (Berlin)</option>
-                        <option value="Asia/Tokyo">Japan (Tokyo)</option>
-                        <option value="Asia/Shanghai">China (Shanghai)</option>
-                        <option value="Asia/Kolkata">India (Kolkata)</option>
-                        <option value="Asia/Dubai">Gulf (Dubai)</option>
-                        <option value="Asia/Singapore">Singapore</option>
-                        <option value="Australia/Sydney">Australia (Sydney)</option>
+                        <optgroup label="Americas">
+                            <option value="Pacific/Honolulu">Hawaii (UTC-10)</option>
+                            <option value="America/Anchorage">Alaska (UTC-9)</option>
+                            <option value="America/Los_Angeles">Pacific (UTC-8)</option>
+                            <option value="America/Denver">Mountain (UTC-7)</option>
+                            <option value="America/Phoenix">Arizona (UTC-7, no DST)</option>
+                            <option value="America/Chicago">Central (UTC-6)</option>
+                            <option value="America/New_York">Eastern (UTC-5)</option>
+                            <option value="America/Halifax">Atlantic Canada (UTC-4)</option>
+                            <option value="America/St_Johns">Newfoundland (UTC-3:30)</option>
+                            <option value="America/Sao_Paulo">Brazil (UTC-3)</option>
+                            <option value="America/Argentina/Buenos_Aires">Argentina (UTC-3)</option>
+                            <option value="America/Santiago">Chile (UTC-3)</option>
+                            <option value="America/Bogota">Colombia (UTC-5)</option>
+                            <option value="America/Mexico_City">Mexico City (UTC-6)</option>
+                            <option value="America/Toronto">Canada Eastern (UTC-5)</option>
+                            <option value="America/Vancouver">Canada Pacific (UTC-8)</option>
+                        </optgroup>
+                        <optgroup label="Europe &amp; Africa">
+                            <option value="Atlantic/Reykjavik">Iceland (UTC+0)</option>
+                            <option value="Europe/London">UK / Ireland (UTC+0)</option>
+                            <option value="Europe/Lisbon">Portugal (UTC+0)</option>
+                            <option value="Europe/Paris">France (UTC+1)</option>
+                            <option value="Europe/Berlin">Germany (UTC+1)</option>
+                            <option value="Europe/Amsterdam">Netherlands (UTC+1)</option>
+                            <option value="Europe/Brussels">Belgium (UTC+1)</option>
+                            <option value="Europe/Madrid">Spain (UTC+1)</option>
+                            <option value="Europe/Rome">Italy (UTC+1)</option>
+                            <option value="Europe/Zurich">Switzerland (UTC+1)</option>
+                            <option value="Europe/Stockholm">Sweden (UTC+1)</option>
+                            <option value="Europe/Oslo">Norway (UTC+1)</option>
+                            <option value="Europe/Copenhagen">Denmark (UTC+1)</option>
+                            <option value="Europe/Warsaw">Poland (UTC+1)</option>
+                            <option value="Europe/Vienna">Austria (UTC+1)</option>
+                            <option value="Europe/Prague">Czech Republic (UTC+1)</option>
+                            <option value="Europe/Helsinki">Finland (UTC+2)</option>
+                            <option value="Europe/Athens">Greece (UTC+2)</option>
+                            <option value="Europe/Bucharest">Romania (UTC+2)</option>
+                            <option value="Europe/Istanbul">Turkey (UTC+3)</option>
+                            <option value="Europe/Moscow">Russia - Moscow (UTC+3)</option>
+                            <option value="Africa/Cairo">Egypt (UTC+2)</option>
+                            <option value="Africa/Lagos">West Africa (UTC+1)</option>
+                            <option value="Africa/Nairobi">East Africa (UTC+3)</option>
+                            <option value="Africa/Johannesburg">South Africa (UTC+2)</option>
+                            <option value="Africa/Casablanca">Morocco (UTC+1)</option>
+                        </optgroup>
+                        <optgroup label="Middle East &amp; Central Asia">
+                            <option value="Asia/Dubai">UAE / Gulf (UTC+4)</option>
+                            <option value="Asia/Riyadh">Saudi Arabia (UTC+3)</option>
+                            <option value="Asia/Tehran">Iran (UTC+3:30)</option>
+                            <option value="Asia/Karachi">Pakistan (UTC+5)</option>
+                            <option value="Asia/Kolkata">India (UTC+5:30)</option>
+                            <option value="Asia/Colombo">Sri Lanka (UTC+5:30)</option>
+                            <option value="Asia/Kathmandu">Nepal (UTC+5:45)</option>
+                            <option value="Asia/Dhaka">Bangladesh (UTC+6)</option>
+                            <option value="Asia/Almaty">Kazakhstan (UTC+6)</option>
+                            <option value="Asia/Tashkent">Uzbekistan (UTC+5)</option>
+                        </optgroup>
+                        <optgroup label="Asia &amp; Pacific">
+                            <option value="Asia/Bangkok">Thailand / Vietnam (UTC+7)</option>
+                            <option value="Asia/Jakarta">Indonesia Western (UTC+7)</option>
+                            <option value="Asia/Singapore">Singapore / Malaysia (UTC+8)</option>
+                            <option value="Asia/Shanghai">China (UTC+8)</option>
+                            <option value="Asia/Hong_Kong">Hong Kong (UTC+8)</option>
+                            <option value="Asia/Taipei">Taiwan (UTC+8)</option>
+                            <option value="Asia/Manila">Philippines (UTC+8)</option>
+                            <option value="Asia/Seoul">South Korea (UTC+9)</option>
+                            <option value="Asia/Tokyo">Japan (UTC+9)</option>
+                        </optgroup>
+                        <optgroup label="Oceania">
+                            <option value="Australia/Perth">Australia Western (UTC+8)</option>
+                            <option value="Australia/Adelaide">Australia Central (UTC+9:30)</option>
+                            <option value="Australia/Sydney">Australia Eastern (UTC+10)</option>
+                            <option value="Australia/Brisbane">Australia Queensland (UTC+10, no DST)</option>
+                            <option value="Pacific/Auckland">New Zealand (UTC+12)</option>
+                            <option value="Pacific/Fiji">Fiji (UTC+12)</option>
+                            <option value="Pacific/Guam">Guam (UTC+10)</option>
+                        </optgroup>
                         <option value="UTC">UTC</option>
                     </select>
                 </label>
